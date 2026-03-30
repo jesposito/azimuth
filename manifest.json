@@ -30,7 +30,7 @@
         "https://www.google.com/maps/*",
         "https://maps.google.com/*"
       ],
-      "js": ["lib/geo.js", "lib/projection.js", "content/content-isolated.js"],
+      "js": ["lib/geo.js", "lib/projection.js", "lib/declination.js", "content/content-isolated.js"],
       "css": ["content/content.css"],
       "run_at": "document_idle",
       "world": "ISOLATED"

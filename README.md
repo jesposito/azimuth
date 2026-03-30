@@ -1,8 +1,8 @@
 # Azimuth
 
-A Chrome extension that lets you draw a line on Google Maps to get a compass bearing and distance.
+A Chrome extension for measuring compass bearings and distances on Google Maps.
 
-Click two points on the map. Get the bearing in degrees, cardinal direction, and distance between them. That's it.
+Click points on the map, type addresses, or plan multi-leg routes. Get true and magnetic bearings, distances, and cardinal directions.
 
 ![Chrome](https://img.shields.io/badge/Chrome-Manifest%20V3-4285f4) ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -13,36 +13,53 @@ Click two points on the map. Get the bearing in degrees, cardinal direction, and
 3. Enable **Developer mode** (top right toggle)
 4. Click **Load unpacked** and select the `azimuth` folder
 
-## Usage
+## Features
 
-1. Navigate to [Google Maps](https://www.google.com/maps)
-2. Click the compass button on the right side of the map (or toggle via the extension popup)
-3. Click to place your **start point** (A)
-4. Click to place your **end point** (B)
-5. Read the bearing and distance
+### Click to measure
+1. Click the compass button on the map (or toggle via the extension popup)
+2. Click to place your **start point** (green marker)
+3. Click to place your **end point** (red marker)
+4. View bearing, distance, and coordinates
 
-- Click again to start a new measurement
-- Press **Esc** to clear or deactivate
-- Toggle off via the compass button or extension popup
+### Address / place search
+Type an address, landmark, or coordinates into the Start and End fields. The extension geocodes via the Google Maps API already loaded on the page.
+
+### Multi-leg waypoints
+Keep clicking after two points to add waypoints. Each leg shows its own bearing line with an arrow and label. The result panel shows per-leg bearings and total distance. Double-click an intermediate waypoint to remove it.
+
+### Draggable markers
+After placing points, grab any marker and drag to adjust. Bearings and distances update live as you drag.
+
+### Magnetic declination
+Shows both true north and magnetic north bearings, calculated using WMM2025 spherical harmonic coefficients (orders 1-3). Accurate to within 1-2 degrees near the 2025.0 epoch.
+
+### Copy results
+One-click copy of all bearing data to clipboard - formatted with per-leg breakdowns for multi-leg routes.
+
+### Keyboard shortcuts
+- **Esc** - clear measurement or deactivate tool
 
 ## What it shows
 
-- **Bearing** - initial azimuth in degrees (0-360) from point A to point B along the great circle
+- **True bearing** - initial azimuth in degrees (0-360) along the great circle
+- **Magnetic bearing** - adjusted for local magnetic declination
 - **Cardinal direction** - 16-point compass rose (N, NNE, NE, ENE, E, ...)
 - **Distance** - Haversine distance (meters or kilometers)
+- **Declination** - local magnetic declination (e.g., "3.2 E")
+- **Coordinates** - lat/lng of start and end points
 
 ## How it works
 
-The extension uses two content scripts running in different Chrome extension "worlds":
+Two content scripts running in different Chrome extension "worlds":
 
-- **MAIN world** (`content-main.js`) - has access to the page's `google.maps.Map` instance for accurate coordinate conversion via the Maps JavaScript API projection
-- **ISOLATED world** (`content-isolated.js`) - handles the UI, SVG overlay, click capture, and bearing math. Communicates with the MAIN world script via `window.postMessage`
+- **MAIN world** (`content-main.js`) - accesses the page's `google.maps.Map` instance for coordinate conversion, geocoding, and place search
+- **ISOLATED world** (`content-isolated.js`) - handles UI, SVG overlay, click capture, waypoint management, and bearing math
 
-If the Maps API instance can't be found (it uses undocumented internals), the extension falls back to parsing the URL (`/@lat,lng,zoomz`) and doing Web Mercator projection math - accurate to within a few meters at typical zoom levels.
+Falls back to URL-based Mercator projection when the Maps API instance can't be found.
 
 ### Bearing formula
 
-Uses the forward azimuth formula:
+Forward azimuth:
 
 ```
 theta = atan2(
@@ -52,14 +69,15 @@ theta = atan2(
 bearing = (theta + 360) % 360
 ```
 
-### Distance formula
+### Magnetic declination
 
-Haversine:
+WMM2025 spherical harmonics (orders 1-3):
 
 ```
-a = sin(dlat/2)^2 + cos(lat1) * cos(lat2) * sin(dlng/2)^2
-c = 2 * atan2(sqrt(a), sqrt(1-a))
-d = R * c    (R = 6,371,000 m)
+V = a * sum_n sum_m (a/r)^(n+1) * [g*cos(m*lng) + h*sin(m*lng)] * P[n][m]
+X = -dV/dtheta / r    (northward component)
+Y = -dV/(r*sin(theta)*dlng)   (eastward component)
+declination = atan2(Y, X)
 ```
 
 ## File structure
@@ -68,12 +86,13 @@ d = R * c    (R = 6,371,000 m)
 azimuth/
   manifest.json              # Chrome Manifest V3 config
   content/
-    content-isolated.js      # UI, overlay, state machine, result display
-    content-main.js          # Bridge to Google Maps API on the page
-    content.css              # Styles for toolbar, overlay, result panel
+    content-isolated.js      # UI, overlay, waypoints, search, result display
+    content-main.js          # Bridge to Google Maps API (geocoding, projection)
+    content.css              # All styling
   lib/
     geo.js                   # Bearing, distance, cardinal direction math
     projection.js            # Fallback Mercator projection from URL
+    declination.js           # WMM2025 magnetic declination calculator
   popup/
     popup.html               # Extension popup with toggle
     popup.js                 # Toggle state management

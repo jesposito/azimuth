@@ -46,6 +46,111 @@
   stroke: #fff;
 }
 
+/* Search panel - slides in from the right below toolbar */
+.bearing-search-panel {
+  position: fixed;
+  bottom: 200px;
+  right: 60px;
+  z-index: 10001;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  font-family: Roboto, Arial, sans-serif;
+  overflow: hidden;
+  width: 260px;
+  opacity: 0;
+  transform: translateX(12px);
+  transition: opacity 0.2s, transform 0.2s;
+  pointer-events: none;
+}
+
+.bearing-search-panel.visible {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+.bearing-search-divider {
+  height: 1px;
+  background: #e8eaed;
+  margin: 0 12px;
+}
+
+.bearing-search-field {
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
+  gap: 6px;
+  position: relative;
+}
+
+.bearing-search-icon-wrap {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.bearing-search-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.bearing-search-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  font-family: Roboto, Arial, sans-serif;
+  font-size: 13px;
+  color: #202124;
+  background: transparent;
+  min-width: 0;
+}
+
+.bearing-search-input::placeholder {
+  color: #9aa0a6;
+}
+
+.bearing-search-input.bearing-search-error {
+  color: #ea4335;
+}
+
+.bearing-search-clear {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: #9aa0a6;
+  font-size: 16px;
+  line-height: 20px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+
+.bearing-search-clear:hover {
+  background: #f1f1f1;
+  color: #202124;
+}
+
+/* Spinner (CSS-only, small) */
+.bearing-search-spinner {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #e8eaed;
+  border-top-color: #4285f4;
+  border-radius: 50%;
+  animation: bearing-spin 0.7s linear infinite;
+}
+
+@keyframes bearing-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* SVG overlay */
 .bearing-overlay {
   position: absolute;
@@ -78,6 +183,10 @@
 
 .bearing-marker-handle:hover {
   r: 12;
+}
+
+.bearing-marker-removable {
+  cursor: pointer;
 }
 
 .bearing-marker-label {
@@ -120,7 +229,7 @@
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2));
 }
 
-/* Preview line (while placing second point) */
+/* Preview line (while placing next point) */
 .bearing-preview-line {
   stroke: #4285f4;
   stroke-width: 2;
@@ -130,9 +239,24 @@
   opacity: 0.5;
 }
 
-/* Direction arrow at midpoint */
+/* Direction arrow at midpoint of each leg */
 .bearing-arrow {
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.3));
+}
+
+/* Per-leg bearing label in SVG */
+.bearing-leg-label {
+  font-family: Roboto, Arial, sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  fill: #202124;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+}
+
+.bearing-leg-label-bg {
+  pointer-events: none;
 }
 
 /* Result panel */
@@ -143,14 +267,15 @@
   z-index: 10001;
   background: #fff;
   border-radius: 8px;
-  padding: 14px 18px;
+  padding: 14px 18px 12px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
   font-family: Roboto, Arial, sans-serif;
   opacity: 0;
   transform: translateY(8px);
   transition: opacity 0.2s, transform 0.2s;
   pointer-events: none;
-  min-width: 180px;
+  min-width: 200px;
+  max-width: 300px;
 }
 
 .bearing-result-panel.visible {
@@ -159,28 +284,84 @@
   pointer-events: auto;
 }
 
+/* Individual leg block inside the result panel */
+.bearing-leg {
+  margin-bottom: 6px;
+}
+
+.bearing-leg-multi {
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e8eaed;
+  margin-bottom: 8px;
+}
+
+.bearing-leg-header {
+  font-size: 10px;
+  font-weight: 600;
+  color: #9aa0a6;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 3px;
+}
+
 .bearing-result-heading {
   display: flex;
   align-items: baseline;
-  gap: 6px;
-  margin-bottom: 4px;
+  gap: 5px;
+  margin-bottom: 2px;
 }
 
 .bearing-degrees {
-  font-size: 26px;
+  font-size: 24px;
   font-weight: 500;
   color: #202124;
 }
 
 .bearing-cardinal {
-  font-size: 18px;
+  font-size: 17px;
   color: #5f6368;
+}
+
+.bearing-true-label {
+  font-size: 11px;
+  color: #9aa0a6;
+  margin-left: 2px;
+}
+
+/* Magnetic bearing row */
+.bearing-mag-row {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  margin-bottom: 3px;
+}
+
+.bearing-mag-degrees {
+  font-size: 14px;
+  font-weight: 500;
+  color: #5f6368;
+}
+
+.bearing-mag-cardinal {
+  font-size: 13px;
+  color: #5f6368;
+}
+
+.bearing-mag-label {
+  font-size: 11px;
+  color: #9aa0a6;
+}
+
+.bearing-decl-note {
+  font-size: 10px;
+  color: #9aa0a6;
+  margin-left: 4px;
 }
 
 .bearing-distance {
   font-size: 14px;
   color: #5f6368;
-  margin-bottom: 4px;
+  margin-bottom: 3px;
 }
 
 .bearing-coords {
@@ -188,6 +369,28 @@
   color: #9aa0a6;
   font-family: 'Roboto Mono', monospace;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Total distance (multi-leg) */
+.bearing-total-distance {
+  margin-top: 4px;
+  padding-top: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.bearing-total-label {
+  font-size: 12px;
+  color: #9aa0a6;
+}
+
+.bearing-total-value {
+  font-size: 15px;
+  font-weight: 500;
+  color: #202124;
 }
 
 .bearing-clear-btn {
@@ -214,6 +417,37 @@
   color: #202124;
 }
 
+/* Copy button */
+.bearing-copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 34px;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid #dadce0;
+  background: #fff;
+  cursor: pointer;
+  color: #4285f4;
+  font-family: Roboto, Arial, sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.bearing-copy-btn:hover {
+  background: #f8f9fa;
+}
+
+.bearing-copy-btn.bearing-copy-btn-success {
+  color: #34a853;
+  border-color: #34a853;
+}
+
 /* Status tooltip */
 .bearing-status {
   position: fixed;
@@ -229,7 +463,7 @@
   opacity: 0;
   transition: opacity 0.15s;
   pointer-events: none;
-  max-width: 400px;
+  max-width: 440px;
 }
 
 .bearing-status.visible {

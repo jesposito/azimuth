@@ -163,5 +163,109 @@
         }, '*');
       }
     }
+
+    if (event.data?.type === 'BEARING_EXT_GEOCODE') {
+      try {
+        const geocoder = new google.maps.Geocoder();
+        geocoder.geocode({ address: event.data.query }, (results, status) => {
+          if (status === google.maps.GeocoderStatus.OK && results && results.length > 0) {
+            const location = results[0].geometry.location;
+            window.postMessage({
+              type: 'BEARING_EXT_GEOCODE_RESULT',
+              requestId: event.data.requestId,
+              lat: location.lat(),
+              lng: location.lng(),
+              formattedAddress: results[0].formatted_address
+            }, '*');
+          } else {
+            window.postMessage({
+              type: 'BEARING_EXT_GEOCODE_RESULT',
+              requestId: event.data.requestId,
+              error: status || 'GEOCODE_FAILED'
+            }, '*');
+          }
+        });
+      } catch (err) {
+        window.postMessage({
+          type: 'BEARING_EXT_GEOCODE_RESULT',
+          requestId: event.data.requestId,
+          error: err.message
+        }, '*');
+      }
+    }
+
+    if (event.data?.type === 'BEARING_EXT_PLACES_AUTOCOMPLETE') {
+      try {
+        const service = new google.maps.places.AutocompleteService();
+        service.getPlacePredictions({ input: event.data.input }, (predictions, status) => {
+          if (status === google.maps.places.PlacesServiceStatus.OK && predictions) {
+            window.postMessage({
+              type: 'BEARING_EXT_AUTOCOMPLETE_RESULT',
+              requestId: event.data.requestId,
+              predictions: predictions.map(p => ({
+                description: p.description,
+                placeId: p.place_id
+              }))
+            }, '*');
+          } else {
+            window.postMessage({
+              type: 'BEARING_EXT_AUTOCOMPLETE_RESULT',
+              requestId: event.data.requestId,
+              error: status || 'AUTOCOMPLETE_FAILED'
+            }, '*');
+          }
+        });
+      } catch (err) {
+        window.postMessage({
+          type: 'BEARING_EXT_AUTOCOMPLETE_RESULT',
+          requestId: event.data.requestId,
+          error: err.message
+        }, '*');
+      }
+    }
+
+    if (event.data?.type === 'BEARING_EXT_PLACE_DETAILS') {
+      const map = mapInstance || findMapInstance();
+      if (!map) {
+        window.postMessage({
+          type: 'BEARING_EXT_PLACE_RESULT',
+          requestId: event.data.requestId,
+          error: 'MAP_NOT_FOUND'
+        }, '*');
+        return;
+      }
+      mapInstance = map;
+
+      try {
+        const service = new google.maps.places.PlacesService(map.getDiv());
+        service.getDetails(
+          { placeId: event.data.placeId, fields: ['geometry', 'name'] },
+          (place, status) => {
+            if (status === google.maps.places.PlacesServiceStatus.OK && place) {
+              const location = place.geometry.location;
+              window.postMessage({
+                type: 'BEARING_EXT_PLACE_RESULT',
+                requestId: event.data.requestId,
+                lat: location.lat(),
+                lng: location.lng(),
+                name: place.name
+              }, '*');
+            } else {
+              window.postMessage({
+                type: 'BEARING_EXT_PLACE_RESULT',
+                requestId: event.data.requestId,
+                error: status || 'PLACE_DETAILS_FAILED'
+              }, '*');
+            }
+          }
+        );
+      } catch (err) {
+        window.postMessage({
+          type: 'BEARING_EXT_PLACE_RESULT',
+          requestId: event.data.requestId,
+          error: err.message
+        }, '*');
+      }
+    }
   });
 })();

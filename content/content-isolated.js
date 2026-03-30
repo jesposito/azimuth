@@ -3,14 +3,13 @@
 
   // === State ===
   let isActive = false;
-  let state = 'IDLE'; // IDLE | WAITING_FIRST | WAITING_SECOND | RESULT
-  let pointA = null;  // { lat, lng }
-  let pointB = null;
+  let state = 'IDLE'; // IDLE | PLACING | RESULT
+  let waypoints = []; // array of { lat, lng }
   let mapContainer = null;
   let pendingRequests = {};
   let urlPollInterval = null;
   let lastURL = '';
-  let dragging = null; // 'A' or 'B' while dragging
+  let dragging = null; // index (number) of waypoint being dragged, or null
 
   // === DOM elements ===
   let toolbar = null;
@@ -19,18 +18,15 @@
   let svgEl = null;
   let resultPanel = null;
   let statusEl = null;
-
-  // SVG element refs for efficient updates during drag
-  let markerGroupA = null;
-  let markerGroupB = null;
-  let lineEl = null;
-  let previewLineEl = null;
-  let arrowEl = null;
+  let searchPanel = null;
+  let searchInputStart = null;
+  let searchInputEnd = null;
 
   // === Colors ===
-  const COLOR_A = '#34a853'; // green - start
-  const COLOR_B = '#ea4335'; // red - end
-  const COLOR_LINE = '#4285f4'; // blue - line
+  const COLOR_START = '#34a853'; // green - start
+  const COLOR_END   = '#ea4335'; // red - end
+  const COLOR_MID   = '#4285f4'; // blue - intermediate waypoints
+  const COLOR_LINE  = '#4285f4'; // blue - line
 
   // === Build compass icon via DOM ===
   function createCompassIcon() {
@@ -71,6 +67,34 @@
     return svg;
   }
 
+  // === Build search icon (magnifying glass) ===
+  function createSearchIcon() {
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', '#9aa0a6');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    svg.setAttribute('class', 'bearing-search-icon');
+
+    const circle = document.createElementNS(ns, 'circle');
+    circle.setAttribute('cx', '11');
+    circle.setAttribute('cy', '11');
+    circle.setAttribute('r', '7');
+    svg.appendChild(circle);
+
+    const handle = document.createElementNS(ns, 'line');
+    handle.setAttribute('x1', '16.5');
+    handle.setAttribute('y1', '16.5');
+    handle.setAttribute('x2', '22');
+    handle.setAttribute('y2', '22');
+    svg.appendChild(handle);
+
+    return svg;
+  }
+
   // === Find map container ===
   function findMapContainer() {
     const selectors = [
@@ -87,11 +111,10 @@
     return null;
   }
 
-  // === Coordinate conversion with fixed fallback ===
+  // === Coordinate conversion with async + fallback ===
   function pixelToLatLng(x, y) {
     return new Promise((resolve) => {
       const requestId = Math.random().toString(36).slice(2);
-      // Store original coords so error handler can use them
       pendingRequests[requestId] = { resolve, x, y, type: 'pixelToLatLng' };
 
       window.postMessage({
@@ -180,6 +203,43 @@
     return null;
   }
 
+  // === Geocoding ===
+  function geocodeQuery(query) {
+    return new Promise((resolve) => {
+      const requestId = Math.random().toString(36).slice(2);
+      pendingRequests[requestId] = { resolve, type: 'geocode', query };
+
+      window.postMessage({
+        type: 'BEARING_EXT_GEOCODE',
+        requestId,
+        query
+      }, '*');
+
+      setTimeout(() => {
+        const pending = pendingRequests[requestId];
+        if (pending) {
+          delete pendingRequests[requestId];
+          // Fall back: try to parse as "lat, lng"
+          const parsed = parseCoordinateString(pending.query);
+          pending.resolve(parsed ? { lat: parsed.lat, lng: parsed.lng } : null);
+        }
+      }, 3000);
+    });
+  }
+
+  function parseCoordinateString(text) {
+    // Try to parse "lat, lng" format
+    const match = text.trim().match(/^(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)$/);
+    if (match) {
+      const lat = parseFloat(match[1]);
+      const lng = parseFloat(match[2]);
+      if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+        return { lat, lng };
+      }
+    }
+    return null;
+  }
+
   // Listen for MAIN world responses
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
@@ -209,6 +269,21 @@
         }
       }
     }
+
+    if (event.data?.type === 'BEARING_EXT_GEOCODE_RESULT') {
+      const { requestId, lat, lng, formattedAddress, error } = event.data;
+      const pending = pendingRequests[requestId];
+      if (pending) {
+        delete pendingRequests[requestId];
+        if (error) {
+          // Try coordinate parse fallback
+          const parsed = parseCoordinateString(pending.query);
+          pending.resolve(parsed ? { lat: parsed.lat, lng: parsed.lng } : null);
+        } else {
+          pending.resolve({ lat, lng, formattedAddress });
+        }
+      }
+    }
   });
 
   // === UI Creation ===
@@ -224,6 +299,28 @@
     toggleBtn.addEventListener('click', toggleTool);
     toolbar.appendChild(toggleBtn);
 
+    // Search panel (slides in when tool is active)
+    searchPanel = document.createElement('div');
+    searchPanel.className = 'bearing-search-panel';
+
+    searchInputStart = createSearchField('Start address or place...');
+    searchPanel.appendChild(searchInputStart.wrapper);
+
+    const divider = document.createElement('div');
+    divider.className = 'bearing-search-divider';
+    searchPanel.appendChild(divider);
+
+    searchInputEnd = createSearchField('End address or place...');
+    searchPanel.appendChild(searchInputEnd.wrapper);
+
+    // Wire search submit handlers once at creation time
+    searchInputStart.input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') handleSearchSubmit(searchInputStart, 'start');
+    });
+    searchInputEnd.input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') handleSearchSubmit(searchInputEnd, 'end');
+    });
+
     resultPanel = document.createElement('div');
     resultPanel.className = 'bearing-result-panel';
     resultPanel.setAttribute('role', 'status');
@@ -235,8 +332,54 @@
     statusEl.setAttribute('aria-live', 'polite');
 
     document.body.appendChild(toolbar);
+    document.body.appendChild(searchPanel);
     document.body.appendChild(resultPanel);
     document.body.appendChild(statusEl);
+  }
+
+  function createSearchField(placeholder) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'bearing-search-field';
+
+    const iconWrap = document.createElement('span');
+    iconWrap.className = 'bearing-search-icon-wrap';
+    iconWrap.appendChild(createSearchIcon());
+    wrapper.appendChild(iconWrap);
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = placeholder;
+    input.className = 'bearing-search-input';
+    input.setAttribute('autocomplete', 'off');
+    input.setAttribute('spellcheck', 'false');
+    wrapper.appendChild(input);
+
+    const clearBtn = document.createElement('button');
+    clearBtn.className = 'bearing-search-clear';
+    clearBtn.title = 'Clear';
+    clearBtn.setAttribute('aria-label', 'Clear search');
+    clearBtn.textContent = '\u00D7';
+    clearBtn.style.display = 'none';
+    wrapper.appendChild(clearBtn);
+
+    // Loading spinner
+    const spinner = document.createElement('span');
+    spinner.className = 'bearing-search-spinner';
+    spinner.style.display = 'none';
+    wrapper.appendChild(spinner);
+
+    input.addEventListener('input', () => {
+      clearBtn.style.display = input.value ? 'flex' : 'none';
+    });
+
+    clearBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      input.value = '';
+      clearBtn.style.display = 'none';
+      input.focus();
+    });
+
+    return { wrapper, input, clearBtn, spinner };
   }
 
   function createOverlay() {
@@ -250,13 +393,13 @@
     svgEl.style.top = '0';
     svgEl.style.left = '0';
 
-    // Arrow marker definition in defs
     const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
     svgEl.appendChild(defs);
 
     overlay.appendChild(svgEl);
 
     overlay.addEventListener('click', handleOverlayClick);
+    overlay.addEventListener('dblclick', handleOverlayDblClick);
     overlay.addEventListener('mousemove', handleOverlayMouseMove);
     overlay.addEventListener('mousedown', handleOverlayMouseDown);
 
@@ -275,9 +418,10 @@
 
   function activate() {
     isActive = true;
-    state = 'WAITING_FIRST';
+    state = 'PLACING';
     toggleBtn.classList.add('active');
     overlay.classList.add('active');
+    searchPanel.classList.add('visible');
     setStatus('Click to place start point');
     startURLPoll();
   }
@@ -285,15 +429,73 @@
   function deactivate() {
     isActive = false;
     state = 'IDLE';
-    pointA = null;
-    pointB = null;
+    waypoints = [];
     dragging = null;
     toggleBtn.classList.remove('active');
     overlay.classList.remove('active');
+    searchPanel.classList.remove('visible');
     clearSVG();
     hideResult();
     hideStatus();
     stopURLPoll();
+    // Clear search inputs
+    if (searchInputStart) {
+      searchInputStart.input.value = '';
+      searchInputStart.clearBtn.style.display = 'none';
+    }
+    if (searchInputEnd) {
+      searchInputEnd.input.value = '';
+      searchInputEnd.clearBtn.style.display = 'none';
+    }
+  }
+
+  async function handleSearchSubmit(field, role) {
+    const query = field.input.value.trim();
+    if (!query) return;
+
+    field.spinner.style.display = 'inline-block';
+    field.clearBtn.style.display = 'none';
+
+    const result = await geocodeQuery(query);
+
+    field.spinner.style.display = 'none';
+    field.clearBtn.style.display = field.input.value ? 'flex' : 'none';
+
+    if (!result) {
+      field.input.classList.add('bearing-search-error');
+      setTimeout(() => field.input.classList.remove('bearing-search-error'), 1500);
+      return;
+    }
+
+    if (role === 'start') {
+      if (waypoints.length === 0) {
+        waypoints.push({ lat: result.lat, lng: result.lng });
+      } else {
+        waypoints[0] = { lat: result.lat, lng: result.lng };
+      }
+    } else {
+      if (waypoints.length === 0) {
+        // No start yet - place this as the end and wait for start
+        waypoints.push({ lat: result.lat, lng: result.lng });
+      } else if (waypoints.length === 1) {
+        // Start exists - append as end
+        waypoints.push({ lat: result.lat, lng: result.lng });
+      } else {
+        // Multiple waypoints - replace the last one
+        waypoints[waypoints.length - 1] = { lat: result.lat, lng: result.lng };
+      }
+    }
+
+    await renderAll();
+
+    if (waypoints.length >= 2) {
+      showResult();
+      state = 'RESULT';
+      setStatus('Drag markers to adjust \u00B7 click map to add waypoints \u00B7 double-click middle marker to remove');
+    } else {
+      state = 'PLACING';
+      setStatus('Click to place end point');
+    }
   }
 
   function setStatus(text) {
@@ -306,12 +508,33 @@
   }
 
   // === Click handling ===
-  async function handleOverlayClick(event) {
-    if (!isActive || dragging) return;
+  // Track last click time to avoid treating first click of a dblclick as a place action
+  let lastClickTime = 0;
+  let clickPendingTimer = null;
 
-    // Don't handle clicks on marker handles (those are for dragging)
+  async function handleOverlayClick(event) {
+    if (!isActive || dragging !== null) return;
     if (event.target.closest('.bearing-marker-handle')) return;
 
+    const now = Date.now();
+    // Cancel any pending single-click if this is a fast second click (dblclick)
+    if (now - lastClickTime < 350 && clickPendingTimer) {
+      clearTimeout(clickPendingTimer);
+      clickPendingTimer = null;
+      lastClickTime = now;
+      return;
+    }
+    lastClickTime = now;
+
+    // Delay to give dblclick a chance to cancel this
+    const eventSnapshot = { clientX: event.clientX, clientY: event.clientY };
+    clickPendingTimer = setTimeout(async () => {
+      clickPendingTimer = null;
+      await processClick(eventSnapshot);
+    }, 220);
+  }
+
+  async function processClick(event) {
     const rect = mapContainer.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
@@ -319,30 +542,52 @@
     const latLng = await pixelToLatLng(x, y);
     if (!latLng) return;
 
-    if (state === 'WAITING_FIRST') {
-      pointA = { lat: latLng.lat, lng: latLng.lng };
+    if (state === 'PLACING') {
+      waypoints.push({ lat: latLng.lat, lng: latLng.lng });
       await renderAll();
-      state = 'WAITING_SECOND';
-      setStatus('Click to place end point');
 
-    } else if (state === 'WAITING_SECOND') {
-      pointB = { lat: latLng.lat, lng: latLng.lng };
-      await renderAll();
-      showResult();
-      state = 'RESULT';
-      setStatus('Drag markers to adjust - click elsewhere to restart');
+      if (waypoints.length === 1) {
+        setStatus('Click to place end point');
+      } else {
+        showResult();
+        state = 'RESULT';
+        setStatus('Drag markers to adjust \u00B7 click map to add waypoints \u00B7 double-click middle marker to remove');
+      }
 
     } else if (state === 'RESULT') {
-      pointA = { lat: latLng.lat, lng: latLng.lng };
-      pointB = null;
+      // Add a new waypoint at the end
+      waypoints.push({ lat: latLng.lat, lng: latLng.lng });
       await renderAll();
-      hideResult();
-      state = 'WAITING_SECOND';
-      setStatus('Click to place end point');
+      showResult();
+      setStatus('Drag markers to adjust \u00B7 click map to add waypoints \u00B7 double-click middle marker to remove');
     }
   }
 
-  // === Preview line while placing second point + drag handling ===
+  // === Double-click to remove intermediate waypoint ===
+  function handleOverlayDblClick(event) {
+    if (!isActive || state !== 'RESULT') return;
+    const handle = event.target.closest('.bearing-marker-handle');
+    if (!handle) return;
+
+    const idx = parseInt(handle.dataset.point, 10);
+    // Cannot remove first or last waypoint (only intermediates)
+    if (isNaN(idx) || idx === 0 || idx === waypoints.length - 1) return;
+
+    // Cancel the pending single click that was fired before this dblclick
+    if (clickPendingTimer) {
+      clearTimeout(clickPendingTimer);
+      clickPendingTimer = null;
+    }
+
+    waypoints.splice(idx, 1);
+    renderAllSync();
+    showResult();
+    setStatus('Drag markers to adjust \u00B7 click map to add waypoints \u00B7 double-click middle marker to remove');
+  }
+
+  // === Preview line while placing + drag handling ===
+  let previewLineEl = null;
+
   function handleOverlayMouseMove(event) {
     if (!isActive) return;
 
@@ -351,41 +596,39 @@
     const my = event.clientY - rect.top;
 
     // Dragging a marker
-    if (dragging) {
+    if (dragging !== null) {
       const latLng = pixelToLatLngSync(mx, my);
       if (!latLng) return;
-
-      if (dragging === 'A') {
-        pointA = { lat: latLng.lat, lng: latLng.lng };
-      } else {
-        pointB = { lat: latLng.lat, lng: latLng.lng };
-      }
+      waypoints[dragging] = { lat: latLng.lat, lng: latLng.lng };
       renderAllSync();
-      if (pointA && pointB) showResult();
+      if (waypoints.length >= 2) showResult();
       return;
     }
 
-    // Preview line from A to cursor
-    if (state === 'WAITING_SECOND' && pointA) {
-      const pxA = latLngToPixelSync(pointA.lat, pointA.lng);
-      if (!pxA) return;
+    // Preview line from last waypoint to cursor
+    if (state === 'PLACING' && waypoints.length >= 1) {
+      const last = waypoints[waypoints.length - 1];
+      const pxLast = latLngToPixelSync(last.lat, last.lng);
+      if (!pxLast) return;
+
       if (!previewLineEl) {
         previewLineEl = document.createElementNS('http://www.w3.org/2000/svg', 'line');
         previewLineEl.setAttribute('class', 'bearing-preview-line');
         svgEl.appendChild(previewLineEl);
       }
-      previewLineEl.setAttribute('x1', pxA.x);
-      previewLineEl.setAttribute('y1', pxA.y);
+      previewLineEl.setAttribute('x1', pxLast.x);
+      previewLineEl.setAttribute('y1', pxLast.y);
       previewLineEl.setAttribute('x2', mx);
       previewLineEl.setAttribute('y2', my);
 
       // Show live bearing in status
       const cursorLatLng = pixelToLatLngSync(mx, my);
       if (cursorLatLng) {
-        const deg = BearingGeo.bearing(pointA.lat, pointA.lng, cursorLatLng.lat, cursorLatLng.lng);
+        const deg = BearingGeo.bearing(last.lat, last.lng, cursorLatLng.lat, cursorLatLng.lng);
         const cardinal = BearingGeo.cardinalDirection(deg);
-        const dist = BearingGeo.distance(pointA.lat, pointA.lng, cursorLatLng.lat, cursorLatLng.lng);
-        setStatus(deg.toFixed(1) + '\u00B0 ' + cardinal + '  \u00B7  ' + BearingGeo.formatDistance(dist) + '  \u2014  click to place end point');
+        const dist = BearingGeo.distance(last.lat, last.lng, cursorLatLng.lat, cursorLatLng.lng);
+        const hint = waypoints.length === 1 ? 'click to place end point' : 'click to add waypoint';
+        setStatus(deg.toFixed(1) + '\u00B0 ' + cardinal + '  \u00B7  ' + BearingGeo.formatDistance(dist) + '  \u2014  ' + hint);
       }
     }
   }
@@ -398,39 +641,48 @@
 
     event.preventDefault();
     event.stopPropagation();
-    dragging = handle.dataset.point; // 'A' or 'B'
+    dragging = parseInt(handle.dataset.point, 10);
     overlay.classList.add('dragging');
 
     const onMouseUp = () => {
       dragging = null;
       overlay.classList.remove('dragging');
       document.removeEventListener('mouseup', onMouseUp);
-      setStatus('Drag markers to adjust - click elsewhere to restart');
+      setStatus('Drag markers to adjust \u00B7 click map to add waypoints \u00B7 double-click middle marker to remove');
     };
     document.addEventListener('mouseup', onMouseUp);
   }
 
   // === SVG rendering ===
   function clearSVG() {
-    // Keep the defs element
     const defs = svgEl.querySelector('defs');
     while (svgEl.firstChild) {
       svgEl.removeChild(svgEl.firstChild);
     }
     if (defs) svgEl.appendChild(defs);
-    markerGroupA = null;
-    markerGroupB = null;
-    lineEl = null;
     previewLineEl = null;
-    arrowEl = null;
   }
 
-  function createMarkerGroup(x, y, label, color, draggable) {
+  function waypointColor(idx) {
+    if (idx === 0) return COLOR_START;
+    if (idx === waypoints.length - 1) return COLOR_END;
+    return COLOR_MID;
+  }
+
+  function waypointLabel(idx) {
+    if (idx === 0) return 'A';
+    if (idx === waypoints.length - 1) return 'B';
+    return String(idx);
+  }
+
+  function createMarkerGroup(x, y, idx, draggable) {
     const ns = 'http://www.w3.org/2000/svg';
+    const color = waypointColor(idx);
+    const label = waypointLabel(idx);
     const g = document.createElementNS(ns, 'g');
     g.setAttribute('transform', 'translate(' + x + ',' + y + ')');
 
-    // Pulse ring on creation
+    // Pulse ring
     const pulse = document.createElementNS(ns, 'circle');
     pulse.setAttribute('cx', '0');
     pulse.setAttribute('cy', '0');
@@ -450,9 +702,10 @@
     circle.setAttribute('fill', color);
     circle.setAttribute('stroke', '#fff');
     circle.setAttribute('stroke-width', '2.5');
-    circle.setAttribute('class', 'bearing-marker' + (draggable ? ' bearing-marker-handle' : ''));
+    const cls = 'bearing-marker' + (draggable ? ' bearing-marker-handle' : '');
+    circle.setAttribute('class', cls);
     if (draggable) {
-      circle.dataset.point = label;
+      circle.dataset.point = String(idx);
     }
     g.appendChild(circle);
 
@@ -464,108 +717,144 @@
     text.textContent = label;
     g.appendChild(text);
 
-    // Drag hint below marker
+    // Drag hint
     if (draggable) {
       const hint = document.createElementNS(ns, 'text');
       hint.setAttribute('x', '0');
       hint.setAttribute('y', '22');
       hint.setAttribute('class', 'bearing-drag-hint');
-      hint.textContent = '\u2725'; // four-way arrow
+      hint.textContent = '\u2725';
       g.appendChild(hint);
+    }
+
+    // Double-click remove hint for intermediate waypoints
+    if (draggable && idx > 0 && idx < waypoints.length - 1) {
+      circle.setAttribute('class', 'bearing-marker bearing-marker-handle bearing-marker-removable');
     }
 
     return g;
   }
 
-  function drawFullLine(pxA, pxB) {
+  function drawLegWithLabel(pxFrom, pxTo, legBearing) {
     const ns = 'http://www.w3.org/2000/svg';
 
-    // Main dashed line
-    lineEl = document.createElementNS(ns, 'line');
-    lineEl.setAttribute('x1', pxA.x);
-    lineEl.setAttribute('y1', pxA.y);
-    lineEl.setAttribute('x2', pxB.x);
-    lineEl.setAttribute('y2', pxB.y);
-    lineEl.setAttribute('class', 'bearing-line');
-    svgEl.appendChild(lineEl);
+    const line = document.createElementNS(ns, 'line');
+    line.setAttribute('x1', pxFrom.x);
+    line.setAttribute('y1', pxFrom.y);
+    line.setAttribute('x2', pxTo.x);
+    line.setAttribute('y2', pxTo.y);
+    line.setAttribute('class', 'bearing-line');
+    svgEl.appendChild(line);
 
-    // Direction arrow at midpoint
-    const midX = (pxA.x + pxB.x) / 2;
-    const midY = (pxA.y + pxB.y) / 2;
-    const angle = Math.atan2(pxB.y - pxA.y, pxB.x - pxA.x) * 180 / Math.PI;
+    const midX = (pxFrom.x + pxTo.x) / 2;
+    const midY = (pxFrom.y + pxTo.y) / 2;
+    const angle = Math.atan2(pxTo.y - pxFrom.y, pxTo.x - pxFrom.x) * 180 / Math.PI;
 
-    arrowEl = document.createElementNS(ns, 'g');
-    arrowEl.setAttribute('transform', 'translate(' + midX + ',' + midY + ') rotate(' + angle + ')');
-
+    // Arrow group
+    const arrowG = document.createElementNS(ns, 'g');
+    arrowG.setAttribute('transform', 'translate(' + midX + ',' + midY + ') rotate(' + angle + ')');
     const arrowPath = document.createElementNS(ns, 'path');
     arrowPath.setAttribute('d', 'M-8,-6 L8,0 L-8,6 Z');
     arrowPath.setAttribute('fill', COLOR_LINE);
     arrowPath.setAttribute('stroke', '#fff');
     arrowPath.setAttribute('stroke-width', '1.5');
     arrowPath.setAttribute('class', 'bearing-arrow');
-    arrowEl.appendChild(arrowPath);
+    arrowG.appendChild(arrowPath);
+    svgEl.appendChild(arrowG);
 
-    svgEl.appendChild(arrowEl);
+    // Per-leg label positioned above midpoint
+    const cardinal = BearingGeo.cardinalDirection(legBearing);
+    const labelG = document.createElementNS(ns, 'g');
+    labelG.setAttribute('transform', 'translate(' + midX + ',' + midY + ')');
+
+    const labelBg = document.createElementNS(ns, 'rect');
+    const labelText = legBearing.toFixed(1) + '\u00B0 ' + cardinal;
+    // Approximate width
+    const approxW = labelText.length * 6.5 + 10;
+    labelBg.setAttribute('x', String(-approxW / 2));
+    labelBg.setAttribute('y', '-22');
+    labelBg.setAttribute('width', String(approxW));
+    labelBg.setAttribute('height', '16');
+    labelBg.setAttribute('rx', '3');
+    labelBg.setAttribute('fill', 'rgba(255,255,255,0.9)');
+    labelBg.setAttribute('class', 'bearing-leg-label-bg');
+    labelG.appendChild(labelBg);
+
+    const labelTxt = document.createElementNS(ns, 'text');
+    labelTxt.setAttribute('x', '0');
+    labelTxt.setAttribute('y', '-11');
+    labelTxt.setAttribute('class', 'bearing-leg-label');
+    labelTxt.textContent = labelText;
+    labelG.appendChild(labelTxt);
+
+    svgEl.appendChild(labelG);
   }
 
-  // Async render (used for initial placement and map moves)
+  // Async render
   async function renderAll() {
     clearSVG();
-    if (!pointA) return;
+    if (waypoints.length === 0) return;
 
-    const pxA = await latLngToPixel(pointA.lat, pointA.lng);
-    if (!pxA) return;
+    const pixels = [];
+    for (const wp of waypoints) {
+      const px = await latLngToPixel(wp.lat, wp.lng);
+      pixels.push(px);
+    }
 
-    if (pointB) {
-      const pxB = await latLngToPixel(pointB.lat, pointB.lng);
-      if (!pxB) return;
-      drawFullLine(pxA, pxB);
-      markerGroupA = createMarkerGroup(pxA.x, pxA.y, 'A', COLOR_A, state === 'RESULT');
-      svgEl.appendChild(markerGroupA);
-      markerGroupB = createMarkerGroup(pxB.x, pxB.y, 'B', COLOR_B, true);
-      svgEl.appendChild(markerGroupB);
-    } else {
-      markerGroupA = createMarkerGroup(pxA.x, pxA.y, 'A', COLOR_A, false);
-      svgEl.appendChild(markerGroupA);
+    // Draw legs
+    for (let i = 0; i < waypoints.length - 1; i++) {
+      if (!pixels[i] || !pixels[i + 1]) continue;
+      const legBearing = BearingGeo.bearing(
+        waypoints[i].lat, waypoints[i].lng,
+        waypoints[i + 1].lat, waypoints[i + 1].lng
+      );
+      drawLegWithLabel(pixels[i], pixels[i + 1], legBearing);
+    }
+
+    // Draw markers on top of lines
+    const inResult = state === 'RESULT';
+    for (let i = 0; i < waypoints.length; i++) {
+      if (!pixels[i]) continue;
+      const draggable = inResult || waypoints.length >= 2;
+      const mg = createMarkerGroup(pixels[i].x, pixels[i].y, i, draggable);
+      svgEl.appendChild(mg);
     }
   }
 
-  // Sync render (used during drag for responsiveness)
+  // Sync render (drag)
   function renderAllSync() {
     clearSVG();
-    if (!pointA) return;
+    if (waypoints.length === 0) return;
 
-    const pxA = latLngToPixelSync(pointA.lat, pointA.lng);
-    if (!pxA) return;
+    const pixels = waypoints.map(wp => latLngToPixelSync(wp.lat, wp.lng));
 
-    if (pointB) {
-      const pxB = latLngToPixelSync(pointB.lat, pointB.lng);
-      if (pxB) {
-        drawFullLine(pxA, pxB);
-        markerGroupA = createMarkerGroup(pxA.x, pxA.y, 'A', COLOR_A, true);
-        svgEl.appendChild(markerGroupA);
-        markerGroupB = createMarkerGroup(pxB.x, pxB.y, 'B', COLOR_B, true);
-        svgEl.appendChild(markerGroupB);
-      }
-    } else {
-      markerGroupA = createMarkerGroup(pxA.x, pxA.y, 'A', COLOR_A, false);
-      svgEl.appendChild(markerGroupA);
+    // Draw legs
+    for (let i = 0; i < waypoints.length - 1; i++) {
+      if (!pixels[i] || !pixels[i + 1]) continue;
+      const legBearing = BearingGeo.bearing(
+        waypoints[i].lat, waypoints[i].lng,
+        waypoints[i + 1].lat, waypoints[i + 1].lng
+      );
+      drawLegWithLabel(pixels[i], pixels[i + 1], legBearing);
+    }
+
+    // Draw markers
+    for (let i = 0; i < waypoints.length; i++) {
+      if (!pixels[i]) continue;
+      const mg = createMarkerGroup(pixels[i].x, pixels[i].y, i, true);
+      svgEl.appendChild(mg);
     }
   }
 
   // === Result display ===
   function showResult() {
-    if (!pointA || !pointB) return;
-
-    const deg = BearingGeo.bearing(pointA.lat, pointA.lng, pointB.lat, pointB.lng);
-    const cardinal = BearingGeo.cardinalDirection(deg);
-    const dist = BearingGeo.distance(pointA.lat, pointA.lng, pointB.lat, pointB.lng);
-    const distStr = BearingGeo.formatDistance(dist);
+    if (waypoints.length < 2) return;
 
     while (resultPanel.firstChild) {
       resultPanel.removeChild(resultPanel.firstChild);
     }
 
+    // Clear button
     const clearBtn = document.createElement('button');
     clearBtn.className = 'bearing-clear-btn';
     clearBtn.title = 'Clear measurement';
@@ -575,36 +864,181 @@
       e.stopPropagation();
       clearMeasurement();
     });
-
-    const heading = document.createElement('div');
-    heading.className = 'bearing-result-heading';
-
-    const degreesSpan = document.createElement('span');
-    degreesSpan.className = 'bearing-degrees';
-    degreesSpan.textContent = deg.toFixed(1) + '\u00B0';
-
-    const cardinalSpan = document.createElement('span');
-    cardinalSpan.className = 'bearing-cardinal';
-    cardinalSpan.textContent = cardinal;
-
-    heading.appendChild(degreesSpan);
-    heading.appendChild(cardinalSpan);
-
-    const distDiv = document.createElement('div');
-    distDiv.className = 'bearing-distance';
-    distDiv.textContent = distStr;
-
-    const coordsDiv = document.createElement('div');
-    coordsDiv.className = 'bearing-coords';
-    coordsDiv.textContent = pointA.lat.toFixed(5) + ', ' + pointA.lng.toFixed(5) +
-      '  \u2192  ' + pointB.lat.toFixed(5) + ', ' + pointB.lng.toFixed(5);
-
     resultPanel.appendChild(clearBtn);
-    resultPanel.appendChild(heading);
-    resultPanel.appendChild(distDiv);
-    resultPanel.appendChild(coordsDiv);
+
+    // Copy button
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'bearing-copy-btn';
+    copyBtn.title = 'Copy results to clipboard';
+    copyBtn.setAttribute('aria-label', 'Copy results');
+    copyBtn.textContent = 'Copy';
+    resultPanel.appendChild(copyBtn);
+
+    let totalDist = 0;
+    const legs = [];
+
+    for (let i = 0; i < waypoints.length - 1; i++) {
+      const wp1 = waypoints[i];
+      const wp2 = waypoints[i + 1];
+      const deg = BearingGeo.bearing(wp1.lat, wp1.lng, wp2.lat, wp2.lng);
+      const cardinal = BearingGeo.cardinalDirection(deg);
+      const dist = BearingGeo.distance(wp1.lat, wp1.lng, wp2.lat, wp2.lng);
+      const decl = MagDeclination.getDeclination((wp1.lat + wp2.lat) / 2, (wp1.lng + wp2.lng) / 2);
+      const magDeg = ((deg - decl) + 360) % 360;
+      const magCardinal = BearingGeo.cardinalDirection(magDeg);
+
+      legs.push({ deg, cardinal, dist, decl, magDeg, magCardinal, wp1, wp2 });
+      totalDist += dist;
+    }
+
+    // Render each leg
+    legs.forEach((leg, i) => {
+      const legEl = document.createElement('div');
+      legEl.className = 'bearing-leg' + (legs.length > 1 ? ' bearing-leg-multi' : '');
+
+      if (legs.length > 1) {
+        const legHeader = document.createElement('div');
+        legHeader.className = 'bearing-leg-header';
+        legHeader.textContent = 'Leg ' + (i + 1);
+        legEl.appendChild(legHeader);
+      }
+
+      const heading = document.createElement('div');
+      heading.className = 'bearing-result-heading';
+
+      const degreesSpan = document.createElement('span');
+      degreesSpan.className = 'bearing-degrees';
+      degreesSpan.textContent = leg.deg.toFixed(1) + '\u00B0';
+
+      const cardinalSpan = document.createElement('span');
+      cardinalSpan.className = 'bearing-cardinal';
+      cardinalSpan.textContent = leg.cardinal;
+
+      const trueLabel = document.createElement('span');
+      trueLabel.className = 'bearing-true-label';
+      trueLabel.textContent = '(true)';
+
+      heading.appendChild(degreesSpan);
+      heading.appendChild(cardinalSpan);
+      heading.appendChild(trueLabel);
+      legEl.appendChild(heading);
+
+      // Magnetic bearing row
+      const magRow = document.createElement('div');
+      magRow.className = 'bearing-mag-row';
+
+      const magDegSpan = document.createElement('span');
+      magDegSpan.className = 'bearing-mag-degrees';
+      magDegSpan.textContent = leg.magDeg.toFixed(1) + '\u00B0';
+
+      const magCardinalSpan = document.createElement('span');
+      magCardinalSpan.className = 'bearing-mag-cardinal';
+      magCardinalSpan.textContent = leg.magCardinal;
+
+      const magLabel = document.createElement('span');
+      magLabel.className = 'bearing-mag-label';
+      magLabel.textContent = '(mag)';
+
+      const declNote = document.createElement('span');
+      declNote.className = 'bearing-decl-note';
+      declNote.textContent = 'Decl: ' + MagDeclination.formatDeclination(leg.decl);
+
+      magRow.appendChild(magDegSpan);
+      magRow.appendChild(magCardinalSpan);
+      magRow.appendChild(magLabel);
+      magRow.appendChild(declNote);
+      legEl.appendChild(magRow);
+
+      // Distance
+      const distDiv = document.createElement('div');
+      distDiv.className = 'bearing-distance';
+      distDiv.textContent = BearingGeo.formatDistance(leg.dist);
+      legEl.appendChild(distDiv);
+
+      // Coords
+      const coordsDiv = document.createElement('div');
+      coordsDiv.className = 'bearing-coords';
+      coordsDiv.textContent =
+        leg.wp1.lat.toFixed(5) + ', ' + leg.wp1.lng.toFixed(5) +
+        '  \u2192  ' +
+        leg.wp2.lat.toFixed(5) + ', ' + leg.wp2.lng.toFixed(5);
+      legEl.appendChild(coordsDiv);
+
+      resultPanel.appendChild(legEl);
+    });
+
+    // Total distance (only if multi-leg)
+    if (legs.length > 1) {
+      const totalDiv = document.createElement('div');
+      totalDiv.className = 'bearing-total-distance';
+
+      const totalLabel = document.createElement('span');
+      totalLabel.className = 'bearing-total-label';
+      totalLabel.textContent = 'Total: ';
+      totalDiv.appendChild(totalLabel);
+
+      const totalVal = document.createElement('span');
+      totalVal.className = 'bearing-total-value';
+      totalVal.textContent = BearingGeo.formatDistance(totalDist);
+      totalDiv.appendChild(totalVal);
+
+      resultPanel.appendChild(totalDiv);
+    }
+
+    // Wire copy button
+    copyBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      copyResults(legs, totalDist);
+    });
 
     resultPanel.classList.add('visible');
+  }
+
+  function copyResults(legs, totalDist) {
+    const lines = [];
+    legs.forEach((leg, i) => {
+      const prefix = legs.length > 1 ? ('Leg ' + (i + 1) + ': ') : '';
+      lines.push(
+        prefix +
+        'Bearing: ' + leg.deg.toFixed(1) + '\u00B0 ' + leg.cardinal + ' (true) / ' +
+        leg.magDeg.toFixed(1) + '\u00B0 ' + leg.magCardinal + ' (mag)' +
+        ' | Distance: ' + BearingGeo.formatDistance(leg.dist) +
+        ' | From: ' + leg.wp1.lat.toFixed(5) + ',' + leg.wp1.lng.toFixed(5) +
+        ' | To: ' + leg.wp2.lat.toFixed(5) + ',' + leg.wp2.lng.toFixed(5)
+      );
+    });
+    if (legs.length > 1) {
+      lines.push('Total distance: ' + BearingGeo.formatDistance(totalDist));
+    }
+    const text = lines.join('\n');
+
+    navigator.clipboard.writeText(text).then(() => {
+      showCopiedConfirmation();
+    }).catch(() => {
+      // Fallback: create a transient textarea
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.top = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      showCopiedConfirmation();
+    });
+  }
+
+  function showCopiedConfirmation() {
+    // Find the copy button in the result panel
+    const copyBtn = resultPanel.querySelector('.bearing-copy-btn');
+    if (!copyBtn) return;
+    const origText = copyBtn.textContent;
+    copyBtn.textContent = 'Copied!';
+    copyBtn.classList.add('bearing-copy-btn-success');
+    setTimeout(() => {
+      copyBtn.textContent = origText;
+      copyBtn.classList.remove('bearing-copy-btn-success');
+    }, 1800);
   }
 
   function hideResult() {
@@ -612,12 +1046,11 @@
   }
 
   function clearMeasurement() {
-    pointA = null;
-    pointB = null;
+    waypoints = [];
     clearSVG();
     hideResult();
     if (isActive) {
-      state = 'WAITING_FIRST';
+      state = 'PLACING';
       setStatus('Click to place start point');
     }
   }
@@ -629,9 +1062,9 @@
       const currentURL = window.location.href;
       if (currentURL !== lastURL) {
         lastURL = currentURL;
-        if (pointA) {
+        if (waypoints.length > 0) {
           await renderAll();
-          if (pointA && pointB) showResult();
+          if (waypoints.length >= 2) showResult();
         }
       }
     }, 200);
@@ -647,7 +1080,7 @@
   // === Keyboard shortcuts ===
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && isActive) {
-      if (state === 'RESULT' || pointA) {
+      if (state === 'RESULT' || waypoints.length > 0) {
         clearMeasurement();
       } else {
         deactivate();
