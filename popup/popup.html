@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup">
+    <h1>Maps Bearing Tool</h1>
+    <p class="description">Draw a line on Google Maps to get a compass bearing and distance.</p>
+    <div class="toggle-row">
+      <span>Enable tool</span>
+      <label class="switch">
+        <input type="checkbox" id="toggle">
+        <span class="slider"></span>
+      </label>
+    </div>
+    <div class="instructions">
+      <p><strong>How to use:</strong></p>
+      <ol>
+        <li>Toggle on or click the compass button on the map</li>
+        <li>Click to place the start point</li>
+        <li>Click to place the end point</li>
+        <li>View bearing and distance</li>
+      </ol>
+      <p class="shortcut">Press <kbd>Esc</kbd> to clear or deactivate</p>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
