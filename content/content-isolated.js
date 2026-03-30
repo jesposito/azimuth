@@ -10,6 +10,7 @@
   let pendingRequests = {};
   let urlPollInterval = null;
   let lastURL = '';
+  let dragging = null; // 'A' or 'B' while dragging
 
   // === DOM elements ===
   let toolbar = null;
@@ -19,13 +20,56 @@
   let resultPanel = null;
   let statusEl = null;
 
-  // === Compass icon SVG ===
-  const COMPASS_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="#666" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-    <circle cx="12" cy="12" r="10"/>
-    <polygon points="12,2 15,10 12,8 9,10" fill="#ea4335" stroke="none"/>
-    <polygon points="12,22 9,14 12,16 15,14" fill="#666" stroke="none"/>
-    <line x1="12" y1="8" x2="12" y2="16"/>
-  </svg>`;
+  // SVG element refs for efficient updates during drag
+  let markerGroupA = null;
+  let markerGroupB = null;
+  let lineEl = null;
+  let previewLineEl = null;
+  let arrowEl = null;
+
+  // === Colors ===
+  const COLOR_A = '#34a853'; // green - start
+  const COLOR_B = '#ea4335'; // red - end
+  const COLOR_LINE = '#4285f4'; // blue - line
+
+  // === Build compass icon via DOM ===
+  function createCompassIcon() {
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', '#666');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+
+    const circle = document.createElementNS(ns, 'circle');
+    circle.setAttribute('cx', '12');
+    circle.setAttribute('cy', '12');
+    circle.setAttribute('r', '10');
+    svg.appendChild(circle);
+
+    const northTriangle = document.createElementNS(ns, 'polygon');
+    northTriangle.setAttribute('points', '12,2 15,10 12,8 9,10');
+    northTriangle.setAttribute('fill', '#ea4335');
+    northTriangle.setAttribute('stroke', 'none');
+    svg.appendChild(northTriangle);
+
+    const southTriangle = document.createElementNS(ns, 'polygon');
+    southTriangle.setAttribute('points', '12,22 9,14 12,16 15,14');
+    southTriangle.setAttribute('fill', '#666');
+    southTriangle.setAttribute('stroke', 'none');
+    svg.appendChild(southTriangle);
+
+    const line = document.createElementNS(ns, 'line');
+    line.setAttribute('x1', '12');
+    line.setAttribute('y1', '8');
+    line.setAttribute('x2', '12');
+    line.setAttribute('y2', '16');
+    svg.appendChild(line);
+
+    return svg;
+  }
 
   // === Find map container ===
   function findMapContainer() {
@@ -43,41 +87,45 @@
     return null;
   }
 
-  // === Pixel-to-LatLng conversion ===
+  // === Coordinate conversion with fixed fallback ===
   function pixelToLatLng(x, y) {
     return new Promise((resolve) => {
       const requestId = Math.random().toString(36).slice(2);
-      pendingRequests[requestId] = resolve;
+      // Store original coords so error handler can use them
+      pendingRequests[requestId] = { resolve, x, y, type: 'pixelToLatLng' };
 
       window.postMessage({
         type: 'BEARING_EXT_PIXEL_TO_LATLNG',
         requestId, x, y
       }, '*');
 
-      // Timeout: fallback to URL-based projection
       setTimeout(() => {
-        if (pendingRequests[requestId]) {
+        const pending = pendingRequests[requestId];
+        if (pending) {
           delete pendingRequests[requestId];
-          const mapState = FallbackProjection.parseMapURL(window.location.href);
-          if (mapState && mapContainer) {
-            const rect = mapContainer.getBoundingClientRect();
-            resolve(FallbackProjection.containerPixelToLatLng(
-              x, y, rect.width, rect.height,
-              mapState.lat, mapState.lng, mapState.zoom
-            ));
-          } else {
-            resolve(null);
-          }
+          resolveFallbackPixelToLatLng(pending.x, pending.y, pending.resolve);
         }
       }, 500);
     });
   }
 
-  // === LatLng-to-Pixel conversion (for repositioning) ===
+  function resolveFallbackPixelToLatLng(x, y, resolve) {
+    const mapState = FallbackProjection.parseMapURL(window.location.href);
+    if (mapState && mapContainer) {
+      const rect = mapContainer.getBoundingClientRect();
+      resolve(FallbackProjection.containerPixelToLatLng(
+        x, y, rect.width, rect.height,
+        mapState.lat, mapState.lng, mapState.zoom
+      ));
+    } else {
+      resolve(null);
+    }
+  }
+
   function latLngToPixel(lat, lng) {
     return new Promise((resolve) => {
       const requestId = Math.random().toString(36).slice(2);
-      pendingRequests[requestId] = resolve;
+      pendingRequests[requestId] = { resolve, lat, lng, type: 'latLngToPixel' };
 
       window.postMessage({
         type: 'BEARING_EXT_LATLNG_TO_PIXEL',
@@ -85,21 +133,51 @@
       }, '*');
 
       setTimeout(() => {
-        if (pendingRequests[requestId]) {
+        const pending = pendingRequests[requestId];
+        if (pending) {
           delete pendingRequests[requestId];
-          const mapState = FallbackProjection.parseMapURL(window.location.href);
-          if (mapState && mapContainer) {
-            const rect = mapContainer.getBoundingClientRect();
-            resolve(FallbackProjection.latLngToContainerPixel(
-              lat, lng, rect.width, rect.height,
-              mapState.lat, mapState.lng, mapState.zoom
-            ));
-          } else {
-            resolve(null);
-          }
+          resolveFallbackLatLngToPixel(pending.lat, pending.lng, pending.resolve);
         }
       }, 500);
     });
+  }
+
+  function resolveFallbackLatLngToPixel(lat, lng, resolve) {
+    const mapState = FallbackProjection.parseMapURL(window.location.href);
+    if (mapState && mapContainer) {
+      const rect = mapContainer.getBoundingClientRect();
+      resolve(FallbackProjection.latLngToContainerPixel(
+        lat, lng, rect.width, rect.height,
+        mapState.lat, mapState.lng, mapState.zoom
+      ));
+    } else {
+      resolve(null);
+    }
+  }
+
+  // Synchronous fallback for drag and preview (no async delay)
+  function latLngToPixelSync(lat, lng) {
+    const mapState = FallbackProjection.parseMapURL(window.location.href);
+    if (mapState && mapContainer) {
+      const rect = mapContainer.getBoundingClientRect();
+      return FallbackProjection.latLngToContainerPixel(
+        lat, lng, rect.width, rect.height,
+        mapState.lat, mapState.lng, mapState.zoom
+      );
+    }
+    return null;
+  }
+
+  function pixelToLatLngSync(x, y) {
+    const mapState = FallbackProjection.parseMapURL(window.location.href);
+    if (mapState && mapContainer) {
+      const rect = mapContainer.getBoundingClientRect();
+      return FallbackProjection.containerPixelToLatLng(
+        x, y, rect.width, rect.height,
+        mapState.lat, mapState.lng, mapState.zoom
+      );
+    }
+    return null;
   }
 
   // Listen for MAIN world responses
@@ -108,36 +186,26 @@
 
     if (event.data?.type === 'BEARING_EXT_LATLNG_RESULT') {
       const { requestId, lat, lng, error } = event.data;
-      if (pendingRequests[requestId]) {
-        const resolve = pendingRequests[requestId];
+      const pending = pendingRequests[requestId];
+      if (pending) {
         delete pendingRequests[requestId];
         if (error) {
-          // Fallback
-          const mapState = FallbackProjection.parseMapURL(window.location.href);
-          if (mapState && mapContainer) {
-            const rect = mapContainer.getBoundingClientRect();
-            resolve(FallbackProjection.containerPixelToLatLng(
-              0, 0, rect.width, rect.height,
-              mapState.lat, mapState.lng, mapState.zoom
-            ));
-          } else {
-            resolve(null);
-          }
+          resolveFallbackPixelToLatLng(pending.x, pending.y, pending.resolve);
         } else {
-          resolve({ lat, lng });
+          pending.resolve({ lat, lng });
         }
       }
     }
 
     if (event.data?.type === 'BEARING_EXT_PIXEL_RESULT') {
       const { requestId, x, y, error } = event.data;
-      if (pendingRequests[requestId]) {
-        const resolve = pendingRequests[requestId];
+      const pending = pendingRequests[requestId];
+      if (pending) {
         delete pendingRequests[requestId];
         if (error) {
-          resolve(null);
+          resolveFallbackLatLngToPixel(pending.lat, pending.lng, pending.resolve);
         } else {
-          resolve({ x, y });
+          pending.resolve({ x, y });
         }
       }
     }
@@ -145,24 +213,26 @@
 
   // === UI Creation ===
   function createUI() {
-    // Toolbar with toggle button
     toolbar = document.createElement('div');
     toolbar.className = 'bearing-toolbar';
 
     toggleBtn = document.createElement('button');
     toggleBtn.className = 'bearing-toggle-btn';
-    toggleBtn.innerHTML = COMPASS_SVG;
-    toggleBtn.title = 'Bearing Tool';
+    toggleBtn.appendChild(createCompassIcon());
+    toggleBtn.title = 'Bearing Tool (Azimuth)';
+    toggleBtn.setAttribute('aria-label', 'Toggle bearing measurement tool');
     toggleBtn.addEventListener('click', toggleTool);
     toolbar.appendChild(toggleBtn);
 
-    // Result panel
     resultPanel = document.createElement('div');
     resultPanel.className = 'bearing-result-panel';
+    resultPanel.setAttribute('role', 'status');
+    resultPanel.setAttribute('aria-live', 'polite');
 
-    // Status tooltip
     statusEl = document.createElement('div');
     statusEl.className = 'bearing-status';
+    statusEl.setAttribute('role', 'status');
+    statusEl.setAttribute('aria-live', 'polite');
 
     document.body.appendChild(toolbar);
     document.body.appendChild(resultPanel);
@@ -179,11 +249,17 @@
     svgEl.style.position = 'absolute';
     svgEl.style.top = '0';
     svgEl.style.left = '0';
+
+    // Arrow marker definition in defs
+    const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    svgEl.appendChild(defs);
+
     overlay.appendChild(svgEl);
 
     overlay.addEventListener('click', handleOverlayClick);
+    overlay.addEventListener('mousemove', handleOverlayMouseMove);
+    overlay.addEventListener('mousedown', handleOverlayMouseDown);
 
-    // Insert overlay into the map container
     mapContainer.style.position = mapContainer.style.position || 'relative';
     mapContainer.appendChild(overlay);
   }
@@ -211,6 +287,7 @@
     state = 'IDLE';
     pointA = null;
     pointB = null;
+    dragging = null;
     toggleBtn.classList.remove('active');
     overlay.classList.remove('active');
     clearSVG();
@@ -230,7 +307,10 @@
 
   // === Click handling ===
   async function handleOverlayClick(event) {
-    if (!isActive) return;
+    if (!isActive || dragging) return;
+
+    // Don't handle clicks on marker handles (those are for dragging)
+    if (event.target.closest('.bearing-marker-handle')) return;
 
     const rect = mapContainer.getBoundingClientRect();
     const x = event.clientX - rect.left;
@@ -241,82 +321,235 @@
 
     if (state === 'WAITING_FIRST') {
       pointA = { lat: latLng.lat, lng: latLng.lng };
-      await renderMarkers();
+      await renderAll();
       state = 'WAITING_SECOND';
       setStatus('Click to place end point');
 
     } else if (state === 'WAITING_SECOND') {
       pointB = { lat: latLng.lat, lng: latLng.lng };
-      await renderMarkers();
+      await renderAll();
       showResult();
       state = 'RESULT';
-      hideStatus();
+      setStatus('Drag markers to adjust - click elsewhere to restart');
 
     } else if (state === 'RESULT') {
-      // Start new measurement
       pointA = { lat: latLng.lat, lng: latLng.lng };
       pointB = null;
-      clearSVG();
+      await renderAll();
       hideResult();
-      await renderMarkers();
       state = 'WAITING_SECOND';
       setStatus('Click to place end point');
     }
   }
 
-  // === SVG rendering ===
-  function clearSVG() {
-    while (svgEl.firstChild) {
-      svgEl.removeChild(svgEl.firstChild);
+  // === Preview line while placing second point + drag handling ===
+  function handleOverlayMouseMove(event) {
+    if (!isActive) return;
+
+    const rect = mapContainer.getBoundingClientRect();
+    const mx = event.clientX - rect.left;
+    const my = event.clientY - rect.top;
+
+    // Dragging a marker
+    if (dragging) {
+      const latLng = pixelToLatLngSync(mx, my);
+      if (!latLng) return;
+
+      if (dragging === 'A') {
+        pointA = { lat: latLng.lat, lng: latLng.lng };
+      } else {
+        pointB = { lat: latLng.lat, lng: latLng.lng };
+      }
+      renderAllSync();
+      if (pointA && pointB) showResult();
+      return;
+    }
+
+    // Preview line from A to cursor
+    if (state === 'WAITING_SECOND' && pointA) {
+      const pxA = latLngToPixelSync(pointA.lat, pointA.lng);
+      if (!pxA) return;
+      if (!previewLineEl) {
+        previewLineEl = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        previewLineEl.setAttribute('class', 'bearing-preview-line');
+        svgEl.appendChild(previewLineEl);
+      }
+      previewLineEl.setAttribute('x1', pxA.x);
+      previewLineEl.setAttribute('y1', pxA.y);
+      previewLineEl.setAttribute('x2', mx);
+      previewLineEl.setAttribute('y2', my);
+
+      // Show live bearing in status
+      const cursorLatLng = pixelToLatLngSync(mx, my);
+      if (cursorLatLng) {
+        const deg = BearingGeo.bearing(pointA.lat, pointA.lng, cursorLatLng.lat, cursorLatLng.lng);
+        const cardinal = BearingGeo.cardinalDirection(deg);
+        const dist = BearingGeo.distance(pointA.lat, pointA.lng, cursorLatLng.lat, cursorLatLng.lng);
+        setStatus(deg.toFixed(1) + '\u00B0 ' + cardinal + '  \u00B7  ' + BearingGeo.formatDistance(dist) + '  \u2014  click to place end point');
+      }
     }
   }
 
-  function createMarker(x, y, label) {
-    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  // === Drag start ===
+  function handleOverlayMouseDown(event) {
+    if (!isActive || state !== 'RESULT') return;
+    const handle = event.target.closest('.bearing-marker-handle');
+    if (!handle) return;
 
-    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-    circle.setAttribute('cx', x);
-    circle.setAttribute('cy', y);
-    circle.setAttribute('r', '8');
-    circle.setAttribute('class', 'bearing-marker');
+    event.preventDefault();
+    event.stopPropagation();
+    dragging = handle.dataset.point; // 'A' or 'B'
+    overlay.classList.add('dragging');
+
+    const onMouseUp = () => {
+      dragging = null;
+      overlay.classList.remove('dragging');
+      document.removeEventListener('mouseup', onMouseUp);
+      setStatus('Drag markers to adjust - click elsewhere to restart');
+    };
+    document.addEventListener('mouseup', onMouseUp);
+  }
+
+  // === SVG rendering ===
+  function clearSVG() {
+    // Keep the defs element
+    const defs = svgEl.querySelector('defs');
+    while (svgEl.firstChild) {
+      svgEl.removeChild(svgEl.firstChild);
+    }
+    if (defs) svgEl.appendChild(defs);
+    markerGroupA = null;
+    markerGroupB = null;
+    lineEl = null;
+    previewLineEl = null;
+    arrowEl = null;
+  }
+
+  function createMarkerGroup(x, y, label, color, draggable) {
+    const ns = 'http://www.w3.org/2000/svg';
+    const g = document.createElementNS(ns, 'g');
+    g.setAttribute('transform', 'translate(' + x + ',' + y + ')');
+
+    // Pulse ring on creation
+    const pulse = document.createElementNS(ns, 'circle');
+    pulse.setAttribute('cx', '0');
+    pulse.setAttribute('cy', '0');
+    pulse.setAttribute('r', '16');
+    pulse.setAttribute('fill', 'none');
+    pulse.setAttribute('stroke', color);
+    pulse.setAttribute('stroke-width', '2');
+    pulse.setAttribute('opacity', '0.3');
+    pulse.setAttribute('class', 'bearing-pulse');
+    g.appendChild(pulse);
+
+    // Main circle
+    const circle = document.createElementNS(ns, 'circle');
+    circle.setAttribute('cx', '0');
+    circle.setAttribute('cy', '0');
+    circle.setAttribute('r', '10');
+    circle.setAttribute('fill', color);
+    circle.setAttribute('stroke', '#fff');
+    circle.setAttribute('stroke-width', '2.5');
+    circle.setAttribute('class', 'bearing-marker' + (draggable ? ' bearing-marker-handle' : ''));
+    if (draggable) {
+      circle.dataset.point = label;
+    }
     g.appendChild(circle);
 
-    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    text.setAttribute('x', x);
-    text.setAttribute('y', y);
+    // Label text
+    const text = document.createElementNS(ns, 'text');
+    text.setAttribute('x', '0');
+    text.setAttribute('y', '0.5');
     text.setAttribute('class', 'bearing-marker-label');
     text.textContent = label;
     g.appendChild(text);
 
+    // Drag hint below marker
+    if (draggable) {
+      const hint = document.createElementNS(ns, 'text');
+      hint.setAttribute('x', '0');
+      hint.setAttribute('y', '22');
+      hint.setAttribute('class', 'bearing-drag-hint');
+      hint.textContent = '\u2725'; // four-way arrow
+      g.appendChild(hint);
+    }
+
     return g;
   }
 
-  function createLine(x1, y1, x2, y2) {
-    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    line.setAttribute('x1', x1);
-    line.setAttribute('y1', y1);
-    line.setAttribute('x2', x2);
-    line.setAttribute('y2', y2);
-    line.setAttribute('class', 'bearing-line');
-    return line;
+  function drawFullLine(pxA, pxB) {
+    const ns = 'http://www.w3.org/2000/svg';
+
+    // Main dashed line
+    lineEl = document.createElementNS(ns, 'line');
+    lineEl.setAttribute('x1', pxA.x);
+    lineEl.setAttribute('y1', pxA.y);
+    lineEl.setAttribute('x2', pxB.x);
+    lineEl.setAttribute('y2', pxB.y);
+    lineEl.setAttribute('class', 'bearing-line');
+    svgEl.appendChild(lineEl);
+
+    // Direction arrow at midpoint
+    const midX = (pxA.x + pxB.x) / 2;
+    const midY = (pxA.y + pxB.y) / 2;
+    const angle = Math.atan2(pxB.y - pxA.y, pxB.x - pxA.x) * 180 / Math.PI;
+
+    arrowEl = document.createElementNS(ns, 'g');
+    arrowEl.setAttribute('transform', 'translate(' + midX + ',' + midY + ') rotate(' + angle + ')');
+
+    const arrowPath = document.createElementNS(ns, 'path');
+    arrowPath.setAttribute('d', 'M-8,-6 L8,0 L-8,6 Z');
+    arrowPath.setAttribute('fill', COLOR_LINE);
+    arrowPath.setAttribute('stroke', '#fff');
+    arrowPath.setAttribute('stroke-width', '1.5');
+    arrowPath.setAttribute('class', 'bearing-arrow');
+    arrowEl.appendChild(arrowPath);
+
+    svgEl.appendChild(arrowEl);
   }
 
-  async function renderMarkers() {
+  // Async render (used for initial placement and map moves)
+  async function renderAll() {
     clearSVG();
+    if (!pointA) return;
 
-    if (pointA) {
-      const pxA = await latLngToPixel(pointA.lat, pointA.lng);
-      if (pxA) {
-        svgEl.appendChild(createMarker(pxA.x, pxA.y, 'A'));
+    const pxA = await latLngToPixel(pointA.lat, pointA.lng);
+    if (!pxA) return;
 
-        if (pointB) {
-          const pxB = await latLngToPixel(pointB.lat, pointB.lng);
-          if (pxB) {
-            svgEl.appendChild(createLine(pxA.x, pxA.y, pxB.x, pxB.y));
-            svgEl.appendChild(createMarker(pxB.x, pxB.y, 'B'));
-          }
-        }
+    if (pointB) {
+      const pxB = await latLngToPixel(pointB.lat, pointB.lng);
+      if (!pxB) return;
+      drawFullLine(pxA, pxB);
+      markerGroupA = createMarkerGroup(pxA.x, pxA.y, 'A', COLOR_A, state === 'RESULT');
+      svgEl.appendChild(markerGroupA);
+      markerGroupB = createMarkerGroup(pxB.x, pxB.y, 'B', COLOR_B, true);
+      svgEl.appendChild(markerGroupB);
+    } else {
+      markerGroupA = createMarkerGroup(pxA.x, pxA.y, 'A', COLOR_A, false);
+      svgEl.appendChild(markerGroupA);
+    }
+  }
+
+  // Sync render (used during drag for responsiveness)
+  function renderAllSync() {
+    clearSVG();
+    if (!pointA) return;
+
+    const pxA = latLngToPixelSync(pointA.lat, pointA.lng);
+    if (!pxA) return;
+
+    if (pointB) {
+      const pxB = latLngToPixelSync(pointB.lat, pointB.lng);
+      if (pxB) {
+        drawFullLine(pxA, pxB);
+        markerGroupA = createMarkerGroup(pxA.x, pxA.y, 'A', COLOR_A, true);
+        svgEl.appendChild(markerGroupA);
+        markerGroupB = createMarkerGroup(pxB.x, pxB.y, 'B', COLOR_B, true);
+        svgEl.appendChild(markerGroupB);
       }
+    } else {
+      markerGroupA = createMarkerGroup(pxA.x, pxA.y, 'A', COLOR_A, false);
+      svgEl.appendChild(markerGroupA);
     }
   }
 
@@ -329,14 +562,14 @@
     const dist = BearingGeo.distance(pointA.lat, pointA.lng, pointB.lat, pointB.lng);
     const distStr = BearingGeo.formatDistance(dist);
 
-    // Build result panel using safe DOM methods
     while (resultPanel.firstChild) {
       resultPanel.removeChild(resultPanel.firstChild);
     }
 
     const clearBtn = document.createElement('button');
     clearBtn.className = 'bearing-clear-btn';
-    clearBtn.title = 'Clear';
+    clearBtn.title = 'Clear measurement';
+    clearBtn.setAttribute('aria-label', 'Clear measurement');
     clearBtn.textContent = '\u00D7';
     clearBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -361,9 +594,15 @@
     distDiv.className = 'bearing-distance';
     distDiv.textContent = distStr;
 
+    const coordsDiv = document.createElement('div');
+    coordsDiv.className = 'bearing-coords';
+    coordsDiv.textContent = pointA.lat.toFixed(5) + ', ' + pointA.lng.toFixed(5) +
+      '  \u2192  ' + pointB.lat.toFixed(5) + ', ' + pointB.lng.toFixed(5);
+
     resultPanel.appendChild(clearBtn);
     resultPanel.appendChild(heading);
     resultPanel.appendChild(distDiv);
+    resultPanel.appendChild(coordsDiv);
 
     resultPanel.classList.add('visible');
   }
@@ -391,7 +630,8 @@
       if (currentURL !== lastURL) {
         lastURL = currentURL;
         if (pointA) {
-          await renderMarkers();
+          await renderAll();
+          if (pointA && pointB) showResult();
         }
       }
     }, 200);
@@ -440,7 +680,6 @@
         }
       });
       observer.observe(document.body, { childList: true, subtree: true });
-      // Give up after 30 seconds
       setTimeout(() => observer.disconnect(), 30000);
       return;
     }
