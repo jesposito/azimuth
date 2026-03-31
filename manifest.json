@@ -6,7 +6,8 @@
   "permissions": ["activeTab", "storage"],
   "host_permissions": [
     "https://www.google.com/maps/*",
-    "https://maps.google.com/*"
+    "https://maps.google.com/*",
+    "https://nominatim.openstreetmap.org/*"
   ],
   "action": {
     "default_popup": "popup/popup.html",

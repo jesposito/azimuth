@@ -210,7 +210,32 @@
   }
 
   // === Geocoding ===
-  function geocodeQuery(query) {
+  // Fallback chain: 1) Parse coordinates  2) Google Maps geocoder  3) Nominatim (OSM)
+
+  /**
+   * Main geocode function. Tries multiple strategies in order.
+   */
+  async function geocodeQuery(query) {
+    // 1. Direct coordinate parse (instant, no network)
+    const parsed = parseCoordinateString(query);
+    if (parsed) return parsed;
+
+    // 2. Try Google Maps geocoder via MAIN world (fast if available)
+    const mapsResult = await geocodeViaMaps(query);
+    if (mapsResult) return mapsResult;
+
+    // 3. Nominatim (OpenStreetMap) via service worker (reliable fallback)
+    const nominatimResult = await geocodeViaNominatim(query);
+    if (nominatimResult) return nominatimResult;
+
+    return null;
+  }
+
+  /**
+   * Google Maps geocoder via postMessage to MAIN world.
+   * Returns null after 1.5s timeout (fails fast so Nominatim can take over).
+   */
+  function geocodeViaMaps(query) {
     return new Promise((resolve) => {
       const requestId = Math.random().toString(36).slice(2);
       pendingRequests[requestId] = { resolve, type: 'geocode', query };
@@ -225,12 +250,35 @@
         const pending = pendingRequests[requestId];
         if (pending) {
           delete pendingRequests[requestId];
-          // Fall back: try to parse as coordinates
-          const parsed = parseCoordinateString(pending.query);
-          pending.resolve(parsed ? { lat: parsed.lat, lng: parsed.lng } : null);
+          pending.resolve(null); // Timed out - let next strategy try
         }
-      }, 2000);
+      }, 1500);
     });
+  }
+
+  /**
+   * Nominatim (OpenStreetMap) geocoder via service worker fetch.
+   * Free, no API key, works for addresses/places/landmarks worldwide.
+   */
+  async function geocodeViaNominatim(query) {
+    try {
+      const response = await new Promise((resolve) => {
+        chrome.runtime.sendMessage(
+          { type: 'GEOCODE_NOMINATIM', query },
+          (resp) => resolve(resp)
+        );
+        // Safety timeout in case service worker doesn't respond
+        setTimeout(() => resolve(null), 5000);
+      });
+
+      if (response && response.results && response.results.length > 0) {
+        const best = response.results[0];
+        return { lat: best.lat, lng: best.lng, formattedAddress: best.displayName };
+      }
+      return null;
+    } catch (_err) {
+      return null;
+    }
   }
 
   function parseCoordinateString(text) {
@@ -258,7 +306,7 @@
     return null;
   }
 
-  // Listen for MAIN world responses
+  // Listen for MAIN world responses (pixel conversion + Maps geocoder)
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
 
@@ -294,9 +342,7 @@
       if (pending) {
         delete pendingRequests[requestId];
         if (error) {
-          // Try coordinate parse fallback
-          const parsed = parseCoordinateString(pending.query);
-          pending.resolve(parsed ? { lat: parsed.lat, lng: parsed.lng } : null);
+          pending.resolve(null); // Let the fallback chain continue
         } else {
           pending.resolve({ lat, lng, formattedAddress });
         }
@@ -483,12 +529,18 @@
     if (!result) {
       field.input.classList.add('bearing-search-error');
       const origValue = field.input.value;
-      field.input.value = 'Not found - try coordinates (lat, lng)';
+      field.input.value = 'Not found - try a different search or coordinates';
       setTimeout(() => {
         field.input.classList.remove('bearing-search-error');
         field.input.value = origValue;
-      }, 2000);
+      }, 2500);
       return;
+    }
+
+    // Show resolved address in the input for feedback
+    if (result.formattedAddress) {
+      field.input.value = result.formattedAddress;
+      field.clearBtn.style.display = 'flex';
     }
 
     if (role === 'start') {
