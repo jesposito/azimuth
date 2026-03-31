@@ -196,9 +196,19 @@
     }
   }
 
+  // Live map state from MAIN world (updated in real-time during pan/zoom)
+  let liveMapState = null;
+
   // Synchronous fallback for drag and preview (no async delay)
+  function getMapState() {
+    // Prefer live state from MAIN world (updates during pan/zoom)
+    if (liveMapState) return liveMapState;
+    // Fall back to URL parsing (updates only after pan/zoom ends)
+    return FallbackProjection.parseMapURL(window.location.href);
+  }
+
   function latLngToPixelSync(lat, lng) {
-    const mapState = FallbackProjection.parseMapURL(window.location.href);
+    const mapState = getMapState();
     if (mapState && mapContainer) {
       const rect = mapContainer.getBoundingClientRect();
       return FallbackProjection.latLngToContainerPixel(
@@ -210,7 +220,7 @@
   }
 
   function pixelToLatLngSync(x, y) {
-    const mapState = FallbackProjection.parseMapURL(window.location.href);
+    const mapState = getMapState();
     if (mapState && mapContainer) {
       const rect = mapContainer.getBoundingClientRect();
       return FallbackProjection.containerPixelToLatLng(
@@ -338,6 +348,19 @@
         } else {
           pending.resolve({ lat, lng, formattedAddress });
         }
+      }
+    }
+
+    // Real-time map movement: update live state and reproject markers during pan/zoom
+    if (event.data?.type === 'BEARING_EXT_MAP_MOVED') {
+      liveMapState = {
+        lat: event.data.center.lat,
+        lng: event.data.center.lng,
+        zoom: event.data.zoom
+      };
+      if (isActive && waypoints.length > 0 && dragging === null) {
+        renderAllSync();
+        if (waypoints.length >= 2) showResult();
       }
     }
   });

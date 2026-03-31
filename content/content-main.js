@@ -62,6 +62,31 @@
     return dummyOverlay;
   }
 
+  // Relay map movement events to ISOLATED world for real-time marker repositioning
+  let mapEventsBound = false;
+  function bindMapEvents(map) {
+    if (mapEventsBound) return;
+    mapEventsBound = true;
+
+    // bounds_changed fires continuously during pan/zoom - throttle to ~60fps
+    let rafPending = false;
+    google.maps.event.addListener(map, 'bounds_changed', () => {
+      if (rafPending) return;
+      rafPending = true;
+      requestAnimationFrame(() => {
+        rafPending = false;
+        const center = map.getCenter();
+        window.postMessage({
+          type: 'BEARING_EXT_MAP_MOVED',
+          nonce: bridgeNonce,
+          center: { lat: center.lat(), lng: center.lng() },
+          zoom: map.getZoom(),
+          heading: map.getHeading() || 0
+        }, window.location.origin);
+      });
+    });
+  }
+
   // Handle pixel-to-latlng conversion requests
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
@@ -88,6 +113,7 @@
         return;
       }
       mapInstance = map;
+      bindMapEvents(map);
 
       try {
         const overlay = getOrCreateOverlay(map);
@@ -126,6 +152,7 @@
         return;
       }
       mapInstance = map;
+      bindMapEvents(map);
 
       try {
         const center = map.getCenter();
@@ -158,6 +185,7 @@
         return;
       }
       mapInstance = map;
+      bindMapEvents(map);
 
       try {
         const overlay = getOrCreateOverlay(map);
@@ -263,6 +291,7 @@
         return;
       }
       mapInstance = map;
+      bindMapEvents(map);
 
       try {
         const service = new google.maps.places.PlacesService(map.getDiv());
