@@ -10,19 +10,16 @@ function assertClose(actual, expected, tolerance, msg) {
 }
 
 describe('MagDeclination.getDeclination()', () => {
-  // NOTE: Our implementation uses WMM2025 spherical harmonic orders 1-3 ONLY.
-  // The full WMM model goes to order 12. Orders 1-3 capture the dipole and low-order
-  // multipole terms but miss significant regional detail. Accuracy is ~5-15 degrees
-  // in many areas, NOT the "1-2 degrees" originally documented. This is a known
-  // limitation flagged by the test suite.
+  // Full WMM2020 model (orders 1-12, 168 coefficients) with secular variation.
+  // All numeric tests pin dateDecimal=2025.0 for deterministic results.
+  // Reference values verified against the NOAA wmm2020 Python package at 2025.0.
   //
-  // Actual computed values (orders 1-3) vs NOAA full WMM2025:
-  //   NYC:      -8.1 (ours) vs -12.5 (NOAA) -- 4.4 degree error
-  //   Denver:  +12.1 (ours) vs  -8.0 (NOAA) -- 20 degree error, WRONG SIGN
-  //   Tokyo:    -4.2 (ours) vs  -8.0 (NOAA) -- 3.8 degree error
-  //   Sao Paulo:-12.2 (ours)vs -21.0 (NOAA) -- 8.8 degree error
-  //   London:   -0.6 (ours) vs  -0.5 (NOAA) -- 0.1 degree error (good)
-  //   Sydney:  +12.4 (ours) vs +12.5 (NOAA) -- 0.1 degree error (good)
+  //   NYC:        -12.67 (NOAA wmm2020: -12.55)
+  //   Denver:      +7.64 (NOAA wmm2020:  +7.56) -- positive (east)
+  //   Tokyo:       -8.05 (NOAA wmm2020:  -7.96)
+  //   Sydney:     +13.00 (NOAA wmm2020: +12.84)
+  //   London:      +0.99 (NOAA wmm2020:  +1.01)
+  //   Sao Paulo:  -21.98 (NOAA wmm2020: -21.94)
 
   it('returns a number', () => {
     const d = MagDeclination.getDeclination(40, -74);
@@ -30,38 +27,37 @@ describe('MagDeclination.getDeclination()', () => {
     assert.ok(!isNaN(d), 'Should not return NaN');
   });
 
-  it('NYC area: our model returns ~ -8 degrees', () => {
-    const d = MagDeclination.getDeclination(40.7, -74.0);
-    assertClose(d, -8.1, 2, 'NYC declination (orders 1-3)');
+  it('NYC area: declination ~ -12.7 degrees (west)', () => {
+    const d = MagDeclination.getDeclination(40.7128, -74.006, 0, 2025.0);
+    assertClose(d, -12.67, 1, 'NYC declination');
     assert.ok(d < 0, 'NYC declination should be negative (west)');
   });
 
-  it('London area: declination ~ 0 degrees (good accuracy for this location)', () => {
-    const d = MagDeclination.getDeclination(51.5, -0.1);
-    assertClose(d, 0, 3, 'London declination');
+  it('London area: declination ~ +1.0 degrees (east)', () => {
+    const d = MagDeclination.getDeclination(51.5074, -0.1278, 0, 2025.0);
+    assertClose(d, 0.99, 1, 'London declination');
   });
 
-  it('Denver area: our model returns ~ +12 (KNOWN INACCURATE - real value is -8)', () => {
-    // This demonstrates the limitation of orders 1-3 only
-    const d = MagDeclination.getDeclination(39.7, -104.9);
-    assertClose(d, 12.1, 2, 'Denver declination (orders 1-3)');
-    // NOTE: Real WMM2025 value is approximately -8. Our model gets the WRONG SIGN here.
+  it('Denver area: declination ~ +7.6 degrees (east)', () => {
+    const d = MagDeclination.getDeclination(39.7392, -104.9903, 0, 2025.0);
+    assertClose(d, 7.64, 1, 'Denver declination');
+    assert.ok(d > 0, 'Denver declination should be positive (east)');
   });
 
-  it('Tokyo area: our model returns ~ -4 degrees', () => {
-    const d = MagDeclination.getDeclination(35.7, 139.7);
-    assertClose(d, -4.2, 2, 'Tokyo declination (orders 1-3)');
+  it('Tokyo area: declination ~ -8.1 degrees (west)', () => {
+    const d = MagDeclination.getDeclination(35.6762, 139.6503, 0, 2025.0);
+    assertClose(d, -8.05, 1, 'Tokyo declination');
   });
 
-  it('Sydney area: declination ~ +12 degrees (good accuracy for this location)', () => {
-    const d = MagDeclination.getDeclination(-33.9, 151.2);
-    assertClose(d, 12.4, 2, 'Sydney declination');
+  it('Sydney area: declination ~ +13.0 degrees (east)', () => {
+    const d = MagDeclination.getDeclination(-33.8688, 151.2093, 0, 2025.0);
+    assertClose(d, 13.0, 1, 'Sydney declination');
     assert.ok(d > 0, 'Sydney declination should be positive (east)');
   });
 
-  it('Sao Paulo area: our model returns ~ -12 degrees', () => {
-    const d = MagDeclination.getDeclination(-23.6, -46.6);
-    assertClose(d, -12.2, 2, 'Sao Paulo declination (orders 1-3)');
+  it('Sao Paulo area: declination ~ -22.0 degrees (west)', () => {
+    const d = MagDeclination.getDeclination(-23.5505, -46.6333, 0, 2025.0);
+    assertClose(d, -21.98, 1, 'Sao Paulo declination');
   });
 
   it('equator at prime meridian', () => {
@@ -71,20 +67,20 @@ describe('MagDeclination.getDeclination()', () => {
   });
 
   it('declination varies with latitude', () => {
-    const d1 = MagDeclination.getDeclination(20, -80);
-    const d2 = MagDeclination.getDeclination(50, -80);
+    const d1 = MagDeclination.getDeclination(20, -80, 0, 2025.0);
+    const d2 = MagDeclination.getDeclination(50, -80, 0, 2025.0);
     assert.ok(d1 !== d2, 'Declination should change with latitude');
   });
 
   it('declination varies with longitude', () => {
-    const d1 = MagDeclination.getDeclination(40, -120);
-    const d2 = MagDeclination.getDeclination(40, -70);
+    const d1 = MagDeclination.getDeclination(40, -120, 0, 2025.0);
+    const d2 = MagDeclination.getDeclination(40, -70, 0, 2025.0);
     assert.ok(d1 !== d2, 'Declination should change with longitude');
   });
 
   it('handles altitude parameter', () => {
-    const d0 = MagDeclination.getDeclination(40, -74, 0);
-    const d10 = MagDeclination.getDeclination(40, -74, 10);
+    const d0 = MagDeclination.getDeclination(40, -74, 0, 2025.0);
+    const d10 = MagDeclination.getDeclination(40, -74, 10, 2025.0);
     // At 10km altitude, declination should be slightly different
     assert.equal(typeof d10, 'number');
     assert.ok(!isNaN(d10), 'Should not return NaN at altitude');

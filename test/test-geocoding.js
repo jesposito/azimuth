@@ -1,33 +1,22 @@
 /**
  * Tests for the geocoding fallback chain and coordinate parsing.
- * Tests the parseCoordinateString logic extracted from content-isolated.js.
+ * Tests the parseCoordinateString logic from lib/geocoding.js.
  */
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 
-// Extract parseCoordinateString from the IIFE (can't easily import, so replicate it)
-function parseCoordinateString(text) {
-  const trimmed = text.trim();
-  const match = trimmed.match(/^(-?\d+\.?\d*)\s*[,\s]\s*(-?\d+\.?\d*)$/);
-  if (match) {
-    const lat = parseFloat(match[1]);
-    const lng = parseFloat(match[2]);
-    if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
-      return { lat, lng };
-    }
-  }
-  const dms = trimmed.match(/^(\d+\.?\d*)\s*([NSns])\s*[,\s]\s*(\d+\.?\d*)\s*([EWew])$/);
-  if (dms) {
-    let lat = parseFloat(dms[1]);
-    let lng = parseFloat(dms[3]);
-    if (dms[2] === 'S' || dms[2] === 's') lat = -lat;
-    if (dms[4] === 'W' || dms[4] === 'w') lng = -lng;
-    if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
-      return { lat, lng };
-    }
-  }
-  return null;
-}
+// Load geocoding.js using vm.runInThisContext so that returned plain objects
+// share the same Object prototype as test expectations, allowing deepStrictEqual.
+// (The standard load-module.js uses vm.createContext which isolates prototypes.)
+const _geocodingCode = fs.readFileSync(
+  path.resolve(__dirname, '..', 'lib/geocoding.js'), 'utf-8'
+).replace(/^const\s+/gm, 'var ');
+vm.runInThisContext(_geocodingCode);
+// BearingGeocoding is now defined in this module's context
+const parseCoordinateString = BearingGeocoding.parseCoordinateString;
 
 describe('parseCoordinateString()', () => {
   describe('standard lat, lng format', () => {

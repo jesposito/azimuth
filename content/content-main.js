@@ -2,8 +2,13 @@
   'use strict';
 
   let mapInstance = null;
+  let bridgeNonce = null;
 
   function findMapInstance() {
+    // Strategy 0: Check for gmp-map web component (documented API, forward-compatible)
+    const gmpMap = document.querySelector('gmp-map');
+    if (gmpMap && gmpMap.innerMap) return gmpMap.innerMap;
+
     // Strategy 1: Walk up from .gm-style to find __gm property
     const gmStyle = document.querySelector('.gm-style');
     if (gmStyle) {
@@ -41,9 +46,35 @@
     return searchDepth(document.body, 0);
   }
 
+  let dummyOverlay = null;
+
+  function getOrCreateOverlay(map) {
+    if (dummyOverlay && dummyOverlay.getMap() === map) {
+      return dummyOverlay;
+    }
+    class DummyOverlay extends google.maps.OverlayView {
+      onAdd() {}
+      draw() {}
+      onRemove() {}
+    }
+    dummyOverlay = new DummyOverlay();
+    dummyOverlay.setMap(map);
+    return dummyOverlay;
+  }
+
   // Handle pixel-to-latlng conversion requests
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
+    if (event.origin !== window.location.origin) return;
+
+    // Nonce validation
+    if (event.data?.nonce) {
+      if (!bridgeNonce) {
+        bridgeNonce = event.data.nonce; // learn nonce from first message
+      } else if (event.data.nonce !== bridgeNonce) {
+        return; // reject mismatched nonce
+      }
+    }
 
     if (event.data?.type === 'BEARING_EXT_PIXEL_TO_LATLNG') {
       const map = mapInstance || findMapInstance();
@@ -51,58 +82,47 @@
         window.postMessage({
           type: 'BEARING_EXT_LATLNG_RESULT',
           requestId: event.data.requestId,
+          nonce: bridgeNonce,
           error: 'MAP_NOT_FOUND'
-        }, '*');
+        }, window.location.origin);
         return;
       }
       mapInstance = map;
 
       try {
-        const projection = map.getProjection();
-        if (!projection) throw new Error('No projection');
+        const overlay = getOrCreateOverlay(map);
+        const proj = overlay.getProjection();
+        if (!proj) throw new Error('Overlay projection not ready');
 
-        const bounds = map.getBounds();
-        const ne = bounds.getNorthEast();
-        const sw = bounds.getSouthWest();
-        const topRight = projection.fromLatLngToPoint(ne);
-        const bottomLeft = projection.fromLatLngToPoint(sw);
-        // Handle world wrap
-        let worldWidth = topRight.x - bottomLeft.x;
-        if (worldWidth < 0) worldWidth += 256;
-
-        const mapDiv = map.getDiv();
-        const rect = mapDiv.getBoundingClientRect();
-
-        // Click position as fraction of container
-        const fracX = event.data.x / rect.width;
-        const fracY = event.data.y / rect.height;
-
-        // World coordinate of the click
-        const worldX = bottomLeft.x + fracX * worldWidth;
-        const worldY = topRight.y + fracY * (bottomLeft.y - topRight.y);
-
-        const worldPoint = new google.maps.Point(worldX, worldY);
-        const latLng = projection.fromPointToLatLng(worldPoint);
+        const latLng = proj.fromContainerPixelToLatLng(
+          new google.maps.Point(event.data.x, event.data.y)
+        );
 
         window.postMessage({
           type: 'BEARING_EXT_LATLNG_RESULT',
           requestId: event.data.requestId,
+          nonce: bridgeNonce,
           lat: latLng.lat(),
           lng: latLng.lng()
-        }, '*');
+        }, window.location.origin);
       } catch (err) {
         window.postMessage({
           type: 'BEARING_EXT_LATLNG_RESULT',
           requestId: event.data.requestId,
+          nonce: bridgeNonce,
           error: err.message
-        }, '*');
+        }, window.location.origin);
       }
     }
 
     if (event.data?.type === 'BEARING_EXT_GET_MAP_STATE') {
       const map = mapInstance || findMapInstance();
       if (!map) {
-        window.postMessage({ type: 'BEARING_EXT_MAP_STATE', error: 'MAP_NOT_FOUND' }, '*');
+        window.postMessage({
+          type: 'BEARING_EXT_MAP_STATE',
+          nonce: bridgeNonce,
+          error: 'MAP_NOT_FOUND'
+        }, window.location.origin);
         return;
       }
       mapInstance = map;
@@ -111,12 +131,17 @@
         const center = map.getCenter();
         window.postMessage({
           type: 'BEARING_EXT_MAP_STATE',
+          nonce: bridgeNonce,
           center: { lat: center.lat(), lng: center.lng() },
           zoom: map.getZoom(),
           heading: map.getHeading() || 0
-        }, '*');
+        }, window.location.origin);
       } catch (err) {
-        window.postMessage({ type: 'BEARING_EXT_MAP_STATE', error: err.message }, '*');
+        window.postMessage({
+          type: 'BEARING_EXT_MAP_STATE',
+          nonce: bridgeNonce,
+          error: err.message
+        }, window.location.origin);
       }
     }
 
@@ -127,49 +152,36 @@
         window.postMessage({
           type: 'BEARING_EXT_PIXEL_RESULT',
           requestId: event.data.requestId,
+          nonce: bridgeNonce,
           error: 'MAP_NOT_FOUND'
-        }, '*');
+        }, window.location.origin);
         return;
       }
       mapInstance = map;
 
       try {
-        const projection = map.getProjection();
-        if (!projection) throw new Error('No projection');
+        const overlay = getOrCreateOverlay(map);
+        const proj = overlay.getProjection();
+        if (!proj) throw new Error('Overlay projection not ready');
 
-        const bounds = map.getBounds();
-        const ne = bounds.getNorthEast();
-        const sw = bounds.getSouthWest();
-        const topRight = projection.fromLatLngToPoint(ne);
-        const bottomLeft = projection.fromLatLngToPoint(sw);
-
-        let worldWidth = topRight.x - bottomLeft.x;
-        if (worldWidth < 0) worldWidth += 256;
-
-        const point = projection.fromLatLngToPoint(
+        const pixel = proj.fromLatLngToContainerPixel(
           new google.maps.LatLng(event.data.lat, event.data.lng)
         );
-
-        const mapDiv = map.getDiv();
-        const rect = mapDiv.getBoundingClientRect();
-
-        let dx = point.x - bottomLeft.x;
-        if (dx < 0) dx += 256;
-
-        const x = (dx / worldWidth) * rect.width;
-        const y = ((point.y - topRight.y) / (bottomLeft.y - topRight.y)) * rect.height;
 
         window.postMessage({
           type: 'BEARING_EXT_PIXEL_RESULT',
           requestId: event.data.requestId,
-          x, y
-        }, '*');
+          nonce: bridgeNonce,
+          x: pixel.x,
+          y: pixel.y
+        }, window.location.origin);
       } catch (err) {
         window.postMessage({
           type: 'BEARING_EXT_PIXEL_RESULT',
           requestId: event.data.requestId,
+          nonce: bridgeNonce,
           error: err.message
-        }, '*');
+        }, window.location.origin);
       }
     }
 
@@ -182,24 +194,27 @@
             window.postMessage({
               type: 'BEARING_EXT_GEOCODE_RESULT',
               requestId: event.data.requestId,
+              nonce: bridgeNonce,
               lat: location.lat(),
               lng: location.lng(),
               formattedAddress: results[0].formatted_address
-            }, '*');
+            }, window.location.origin);
           } else {
             window.postMessage({
               type: 'BEARING_EXT_GEOCODE_RESULT',
               requestId: event.data.requestId,
+              nonce: bridgeNonce,
               error: status || 'GEOCODE_FAILED'
-            }, '*');
+            }, window.location.origin);
           }
         });
       } catch (err) {
         window.postMessage({
           type: 'BEARING_EXT_GEOCODE_RESULT',
           requestId: event.data.requestId,
+          nonce: bridgeNonce,
           error: err.message
-        }, '*');
+        }, window.location.origin);
       }
     }
 
@@ -211,25 +226,28 @@
             window.postMessage({
               type: 'BEARING_EXT_AUTOCOMPLETE_RESULT',
               requestId: event.data.requestId,
+              nonce: bridgeNonce,
               predictions: predictions.map(p => ({
                 description: p.description,
                 placeId: p.place_id
               }))
-            }, '*');
+            }, window.location.origin);
           } else {
             window.postMessage({
               type: 'BEARING_EXT_AUTOCOMPLETE_RESULT',
               requestId: event.data.requestId,
+              nonce: bridgeNonce,
               error: status || 'AUTOCOMPLETE_FAILED'
-            }, '*');
+            }, window.location.origin);
           }
         });
       } catch (err) {
         window.postMessage({
           type: 'BEARING_EXT_AUTOCOMPLETE_RESULT',
           requestId: event.data.requestId,
+          nonce: bridgeNonce,
           error: err.message
-        }, '*');
+        }, window.location.origin);
       }
     }
 
@@ -239,8 +257,9 @@
         window.postMessage({
           type: 'BEARING_EXT_PLACE_RESULT',
           requestId: event.data.requestId,
+          nonce: bridgeNonce,
           error: 'MAP_NOT_FOUND'
-        }, '*');
+        }, window.location.origin);
         return;
       }
       mapInstance = map;
@@ -255,16 +274,18 @@
               window.postMessage({
                 type: 'BEARING_EXT_PLACE_RESULT',
                 requestId: event.data.requestId,
+                nonce: bridgeNonce,
                 lat: location.lat(),
                 lng: location.lng(),
                 name: place.name
-              }, '*');
+              }, window.location.origin);
             } else {
               window.postMessage({
                 type: 'BEARING_EXT_PLACE_RESULT',
                 requestId: event.data.requestId,
+                nonce: bridgeNonce,
                 error: status || 'PLACE_DETAILS_FAILED'
-              }, '*');
+              }, window.location.origin);
             }
           }
         );
@@ -272,8 +293,9 @@
         window.postMessage({
           type: 'BEARING_EXT_PLACE_RESULT',
           requestId: event.data.requestId,
+          nonce: bridgeNonce,
           error: err.message
-        }, '*');
+        }, window.location.origin);
       }
     }
   });

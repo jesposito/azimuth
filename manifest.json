@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Azimuth",
   "version": "1.0.0",
-  "description": "Draw a line on Google Maps to get a compass bearing and distance.",
-  "permissions": ["activeTab", "storage"],
+  "description": "Draw a line on Google Maps\u2122 to get a compass bearing and distance.",
+  "permissions": ["storage"],
   "host_permissions": [
     "https://www.google.com/maps/*",
     "https://maps.google.com/*",
@@ -31,7 +31,7 @@
         "https://www.google.com/maps/*",
         "https://maps.google.com/*"
       ],
-      "js": ["lib/geo.js", "lib/projection.js", "lib/declination.js", "content/content-isolated.js"],
+      "js": ["lib/geo.js", "lib/projection.js", "lib/declination.js", "lib/geocoding.js", "content/content-isolated.js"],
       "css": ["content/content.css"],
       "run_at": "document_idle",
       "world": "ISOLATED"

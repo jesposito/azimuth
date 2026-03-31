@@ -1,6 +1,9 @@
 (function() {
   'use strict';
 
+  // === Security ===
+  const BRIDGE_NONCE = crypto.randomUUID();
+
   // === State ===
   let isActive = false;
   let state = 'IDLE'; // IDLE | PLACING | RESULT
@@ -10,6 +13,9 @@
   let urlPollInterval = null;
   let lastURL = '';
   let dragging = null; // index (number) of waypoint being dragged, or null
+  let dragPending = null; // index of marker awaiting threshold check
+  let dragStartPos = null; // {x, y} of initial pointerdown for threshold
+  const DRAG_THRESHOLD = 4;
 
   // SVG element refs for efficient drag updates
   let svgMarkerGroups = [];
@@ -129,8 +135,9 @@
 
       window.postMessage({
         type: 'BEARING_EXT_PIXEL_TO_LATLNG',
+        nonce: BRIDGE_NONCE,
         requestId, x, y
-      }, '*');
+      }, window.location.origin);
 
       setTimeout(() => {
         const pending = pendingRequests[requestId];
@@ -162,8 +169,9 @@
 
       window.postMessage({
         type: 'BEARING_EXT_LATLNG_TO_PIXEL',
+        nonce: BRIDGE_NONCE,
         requestId, lat, lng
-      }, '*');
+      }, window.location.origin);
 
       setTimeout(() => {
         const pending = pendingRequests[requestId];
@@ -246,9 +254,10 @@
 
       window.postMessage({
         type: 'BEARING_EXT_GEOCODE',
+        nonce: BRIDGE_NONCE,
         requestId,
         query
-      }, '*');
+      }, window.location.origin);
 
       setTimeout(() => {
         const pending = pendingRequests[requestId];
@@ -285,33 +294,12 @@
     }
   }
 
-  function parseCoordinateString(text) {
-    const trimmed = text.trim();
-    // "lat, lng" or "lat lng" or "lat,lng"
-    const match = trimmed.match(/^(-?\d+\.?\d*)\s*[,\s]\s*(-?\d+\.?\d*)$/);
-    if (match) {
-      const lat = parseFloat(match[1]);
-      const lng = parseFloat(match[2]);
-      if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
-        return { lat, lng };
-      }
-    }
-    // DMS-ish: "40.7128N 74.006W" or "40.7128N, 74.006W"
-    const dms = trimmed.match(/^(\d+\.?\d*)\s*([NSns])\s*[,\s]\s*(\d+\.?\d*)\s*([EWew])$/);
-    if (dms) {
-      let lat = parseFloat(dms[1]);
-      let lng = parseFloat(dms[3]);
-      if (dms[2] === 'S' || dms[2] === 's') lat = -lat;
-      if (dms[4] === 'W' || dms[4] === 'w') lng = -lng;
-      if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
-        return { lat, lng };
-      }
-    }
-    return null;
-  }
+  // parseCoordinateString is provided by lib/geocoding.js (loaded before this script)
+  const parseCoordinateString = BearingGeocoding.parseCoordinateString;
 
   // Listen for MAIN world responses (pixel conversion + Maps geocoder)
   window.addEventListener('message', (event) => {
+    if (event.origin !== window.location.origin) return;
     if (event.source !== window) return;
 
     if (event.data?.type === 'BEARING_EXT_LATLNG_RESULT') {
@@ -458,6 +446,9 @@
   function createOverlay() {
     overlay = document.createElement('div');
     overlay.className = 'bearing-overlay';
+    overlay.setAttribute('role', 'application');
+    overlay.setAttribute('aria-label', 'Azimuth bearing measurement overlay');
+    overlay.setAttribute('aria-hidden', 'true');
 
     svgEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svgEl.setAttribute('width', '100%');
@@ -472,7 +463,6 @@
     overlay.appendChild(svgEl);
 
     overlay.addEventListener('click', handleOverlayClick);
-    overlay.addEventListener('dblclick', handleOverlayDblClick);
     overlay.addEventListener('pointermove', handleOverlayPointerMove);
     overlay.addEventListener('pointerdown', handleOverlayPointerDown);
 
@@ -494,6 +484,7 @@
     state = 'PLACING';
     toggleBtn.classList.add('active');
     overlay.classList.add('active');
+    overlay.removeAttribute('aria-hidden');
     searchPanel.classList.add('visible');
     setStatus('Click to place start point');
     startURLPoll();
@@ -504,13 +495,19 @@
     state = 'IDLE';
     waypoints = [];
     dragging = null;
+    dragPending = null;
+    dragStartPos = null;
     toggleBtn.classList.remove('active');
     overlay.classList.remove('active');
+    overlay.setAttribute('aria-hidden', 'true');
     searchPanel.classList.remove('visible');
-    clearSVG();
+    // Start fade-out on visible panels, then clean up after transition
     hideResult();
     hideStatus();
     stopURLPoll();
+    setTimeout(() => {
+      clearSVG();
+    }, 150);
     // Clear search inputs
     if (searchInputStart) {
       searchInputStart.input.value = '';
@@ -590,7 +587,7 @@
   function resultStatus() {
     let msg = 'Drag markers to adjust \u00B7 click map to add waypoints';
     if (waypoints.length > 2) {
-      msg += ' \u00B7 double-click middle marker to remove';
+      msg += ' \u00B7 hover middle marker to remove';
     }
     return msg;
   }
@@ -600,30 +597,12 @@
   }
 
   // === Click handling ===
-  // Track last click time to avoid treating first click of a dblclick as a place action
-  let lastClickTime = 0;
-  let clickPendingTimer = null;
-
   async function handleOverlayClick(event) {
     if (!isActive || dragging !== null) return;
     if (event.target.closest('.bearing-marker-handle')) return;
+    if (event.target.closest('.bearing-delete-btn')) return;
 
-    const now = Date.now();
-    // Cancel any pending single-click if this is a fast second click (dblclick)
-    if (now - lastClickTime < 350 && clickPendingTimer) {
-      clearTimeout(clickPendingTimer);
-      clickPendingTimer = null;
-      lastClickTime = now;
-      return;
-    }
-    lastClickTime = now;
-
-    // Delay to give dblclick a chance to cancel this
-    const eventSnapshot = { clientX: event.clientX, clientY: event.clientY };
-    clickPendingTimer = setTimeout(async () => {
-      clickPendingTimer = null;
-      await processClick(eventSnapshot);
-    }, 220);
+    await processClick({ clientX: event.clientX, clientY: event.clientY });
   }
 
   async function processClick(event) {
@@ -655,28 +634,6 @@
     }
   }
 
-  // === Double-click to remove intermediate waypoint ===
-  function handleOverlayDblClick(event) {
-    if (!isActive || state !== 'RESULT') return;
-    const handle = event.target.closest('.bearing-marker-handle');
-    if (!handle) return;
-
-    const idx = parseInt(handle.dataset.point, 10);
-    // Cannot remove first or last waypoint (only intermediates)
-    if (isNaN(idx) || idx === 0 || idx === waypoints.length - 1) return;
-
-    // Cancel the pending single click that was fired before this dblclick
-    if (clickPendingTimer) {
-      clearTimeout(clickPendingTimer);
-      clickPendingTimer = null;
-    }
-
-    waypoints.splice(idx, 1);
-    renderAllSync();
-    showResult();
-    setStatus(resultStatus());
-  }
-
   // === Preview line while placing + drag handling ===
   let previewLineEl = null;
 
@@ -686,6 +643,23 @@
     const rect = mapContainer.getBoundingClientRect();
     const mx = event.clientX - rect.left;
     const my = event.clientY - rect.top;
+
+    // Check if pending drag has crossed the threshold
+    if (dragPending !== null && dragging === null) {
+      const dx = event.clientX - dragStartPos.x;
+      const dy = event.clientY - dragStartPos.y;
+      if (Math.sqrt(dx * dx + dy * dy) >= DRAG_THRESHOLD) {
+        dragging = dragPending;
+        dragPending = null;
+        overlay.classList.add('dragging');
+        overlay.setPointerCapture(event.pointerId);
+        if (svgMarkerGroups[dragging]) {
+          svgMarkerGroups[dragging].classList.add('bearing-marker-group-lifted');
+        }
+        dragTooltip.classList.add('visible');
+      }
+      return;
+    }
 
     // Dragging a marker
     if (dragging !== null) {
@@ -782,18 +756,18 @@
 
     event.preventDefault();
     event.stopPropagation();
-    dragging = parseInt(handle.dataset.point, 10);
-    overlay.classList.add('dragging');
-    overlay.setPointerCapture(event.pointerId);
-
-    // Lift effect: scale up the marker
-    if (svgMarkerGroups[dragging]) {
-      svgMarkerGroups[dragging].classList.add('bearing-marker-group-lifted');
-    }
-    dragTooltip.classList.add('visible');
+    dragPending = parseInt(handle.dataset.point, 10);
+    dragStartPos = { x: event.clientX, y: event.clientY };
+    // Don't set dragging yet -- wait for threshold in pointermove
 
     const onPointerUp = () => {
-      finishDrag();
+      // If threshold was never met, just cancel the pending drag
+      if (dragPending !== null) {
+        dragPending = null;
+        dragStartPos = null;
+      } else {
+        finishDrag();
+      }
       document.removeEventListener('pointerup', onPointerUp);
     };
     document.addEventListener('pointerup', onPointerUp);
@@ -805,8 +779,9 @@
     overlay.classList.remove('dragging');
     dragTooltip.classList.remove('visible');
 
-    // Drop-settle animation
-    if (droppedIdx !== null && svgMarkerGroups[droppedIdx]) {
+    // Drop-settle animation (skip if reduced motion)
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (!reducedMotion && droppedIdx !== null && svgMarkerGroups[droppedIdx]) {
       svgMarkerGroups[droppedIdx].classList.remove('bearing-marker-group-lifted');
       svgMarkerGroups[droppedIdx].classList.add('bearing-marker-group-dropped');
       setTimeout(() => {
@@ -814,6 +789,8 @@
           svgMarkerGroups[droppedIdx].classList.remove('bearing-marker-group-dropped');
         }
       }, 350);
+    } else if (droppedIdx !== null && svgMarkerGroups[droppedIdx]) {
+      svgMarkerGroups[droppedIdx].classList.remove('bearing-marker-group-lifted');
     }
 
     // Full rebuild to add ghost markers back
@@ -850,6 +827,7 @@
     const label = waypointLabel(idx);
     const g = document.createElementNS(ns, 'g');
     g.setAttribute('transform', 'translate(' + x + ',' + y + ')');
+    g.setAttribute('class', 'bearing-marker-group');
 
     // Pulse ring
     const pulse = document.createElementNS(ns, 'circle');
@@ -896,9 +874,52 @@
       g.appendChild(hint);
     }
 
-    // Double-click remove hint for intermediate waypoints
+    // Delete button for intermediate waypoints (hover X)
     if (draggable && idx > 0 && idx < waypoints.length - 1) {
       circle.setAttribute('class', 'bearing-marker bearing-marker-handle bearing-marker-removable');
+
+      // Delete circle background
+      const delCircle = document.createElementNS(ns, 'circle');
+      delCircle.setAttribute('cx', '10');
+      delCircle.setAttribute('cy', '-10');
+      delCircle.setAttribute('r', '8');
+      delCircle.setAttribute('fill', '#ea4335');
+      delCircle.setAttribute('stroke', '#fff');
+      delCircle.setAttribute('stroke-width', '1.5');
+      delCircle.setAttribute('class', 'bearing-delete-btn');
+      delCircle.dataset.point = String(idx);
+      g.appendChild(delCircle);
+
+      // Delete X text
+      const delText = document.createElementNS(ns, 'text');
+      delText.setAttribute('x', '10');
+      delText.setAttribute('y', '-9.5');
+      delText.setAttribute('text-anchor', 'middle');
+      delText.setAttribute('dominant-baseline', 'central');
+      delText.setAttribute('fill', '#fff');
+      delText.setAttribute('font-size', '10');
+      delText.setAttribute('font-weight', '700');
+      delText.setAttribute('class', 'bearing-delete-btn');
+      delText.setAttribute('pointer-events', 'none');
+      delText.dataset.point = String(idx);
+      delText.textContent = '\u00D7';
+      g.appendChild(delText);
+
+      // Delete click handler (on the circle, not text since text has pointer-events none)
+      delCircle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const pointIdx = parseInt(delCircle.dataset.point, 10);
+        if (!isNaN(pointIdx) && pointIdx > 0 && pointIdx < waypoints.length - 1) {
+          waypoints.splice(pointIdx, 1);
+          if (waypoints.length < 2) {
+            state = 'PLACING';
+            resultPanel.classList.remove('visible');
+          }
+          renderAllSync();
+          if (waypoints.length >= 2) showResult();
+          setStatus(waypoints.length >= 2 ? resultStatus() : 'Click to place end point');
+        }
+      });
     }
 
     return g;
@@ -1295,6 +1316,25 @@
       magRow.appendChild(declNote);
       legEl.appendChild(magRow);
 
+      // Reciprocal bearing
+      const reciprocal = (leg.deg + 180) % 360;
+      const reciprocalCardinal = BearingGeo.cardinalDirection(reciprocal);
+      const reciprocalDiv = document.createElement('div');
+      reciprocalDiv.className = 'bearing-mag-row';
+      const recipLabelSpan = document.createElement('span');
+      recipLabelSpan.className = 'bearing-mag-label';
+      recipLabelSpan.textContent = 'Reciprocal:\u00A0';
+      const recipDegreesSpan = document.createElement('span');
+      recipDegreesSpan.className = 'bearing-mag-degrees';
+      recipDegreesSpan.textContent = reciprocal.toFixed(1) + '\u00B0';
+      const recipCardinalSpan = document.createElement('span');
+      recipCardinalSpan.className = 'bearing-mag-cardinal';
+      recipCardinalSpan.textContent = ' ' + reciprocalCardinal;
+      reciprocalDiv.appendChild(recipLabelSpan);
+      reciprocalDiv.appendChild(recipDegreesSpan);
+      reciprocalDiv.appendChild(recipCardinalSpan);
+      legEl.appendChild(reciprocalDiv);
+
       // Distance
       const distDiv = document.createElement('div');
       distDiv.className = 'bearing-distance';
@@ -1439,6 +1479,24 @@
         clearMeasurement();
       } else {
         deactivate();
+      }
+    }
+
+    if ((event.ctrlKey || event.metaKey) && event.key === 'z' && isActive) {
+      event.preventDefault();
+      if (waypoints.length > 0) {
+        waypoints.pop();
+        if (waypoints.length < 2) {
+          state = 'PLACING';
+          resultPanel.classList.remove('visible');
+        }
+        renderAllSync();
+        if (waypoints.length >= 2) showResult();
+        setStatus(
+          waypoints.length === 0 ? 'Click to place start point' :
+          waypoints.length === 1 ? 'Click to place end point' :
+          resultStatus()
+        );
       }
     }
   });
