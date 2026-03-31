@@ -225,20 +225,32 @@
         const pending = pendingRequests[requestId];
         if (pending) {
           delete pendingRequests[requestId];
-          // Fall back: try to parse as "lat, lng"
+          // Fall back: try to parse as coordinates
           const parsed = parseCoordinateString(pending.query);
           pending.resolve(parsed ? { lat: parsed.lat, lng: parsed.lng } : null);
         }
-      }, 3000);
+      }, 2000);
     });
   }
 
   function parseCoordinateString(text) {
-    // Try to parse "lat, lng" format
-    const match = text.trim().match(/^(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)$/);
+    const trimmed = text.trim();
+    // "lat, lng" or "lat lng" or "lat,lng"
+    const match = trimmed.match(/^(-?\d+\.?\d*)\s*[,\s]\s*(-?\d+\.?\d*)$/);
     if (match) {
       const lat = parseFloat(match[1]);
       const lng = parseFloat(match[2]);
+      if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+        return { lat, lng };
+      }
+    }
+    // DMS-ish: "40.7128N 74.006W" or "40.7128N, 74.006W"
+    const dms = trimmed.match(/^(\d+\.?\d*)\s*([NSns])\s*[,\s]\s*(\d+\.?\d*)\s*([EWew])$/);
+    if (dms) {
+      let lat = parseFloat(dms[1]);
+      let lng = parseFloat(dms[3]);
+      if (dms[2] === 'S' || dms[2] === 's') lat = -lat;
+      if (dms[4] === 'W' || dms[4] === 'w') lng = -lng;
       if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
         return { lat, lng };
       }
@@ -470,7 +482,12 @@
 
     if (!result) {
       field.input.classList.add('bearing-search-error');
-      setTimeout(() => field.input.classList.remove('bearing-search-error'), 1500);
+      const origValue = field.input.value;
+      field.input.value = 'Not found - try coordinates (lat, lng)';
+      setTimeout(() => {
+        field.input.classList.remove('bearing-search-error');
+        field.input.value = origValue;
+      }, 2000);
       return;
     }
 
@@ -498,7 +515,7 @@
     if (waypoints.length >= 2) {
       showResult();
       state = 'RESULT';
-      setStatus('Drag markers to adjust \u00B7 click map to add waypoints \u00B7 double-click middle marker to remove');
+      setStatus(resultStatus());
     } else {
       state = 'PLACING';
       setStatus('Click to place end point');
@@ -508,6 +525,14 @@
   function setStatus(text) {
     statusEl.textContent = text;
     statusEl.classList.add('visible');
+  }
+
+  function resultStatus() {
+    let msg = 'Drag markers to adjust \u00B7 click map to add waypoints';
+    if (waypoints.length > 2) {
+      msg += ' \u00B7 double-click middle marker to remove';
+    }
+    return msg;
   }
 
   function hideStatus() {
@@ -558,7 +583,7 @@
       } else {
         showResult();
         state = 'RESULT';
-        setStatus('Drag markers to adjust \u00B7 click map to add waypoints \u00B7 double-click middle marker to remove');
+        setStatus(resultStatus());
       }
 
     } else if (state === 'RESULT') {
@@ -566,7 +591,7 @@
       waypoints.push({ lat: latLng.lat, lng: latLng.lng });
       await renderAll();
       showResult();
-      setStatus('Drag markers to adjust \u00B7 click map to add waypoints \u00B7 double-click middle marker to remove');
+      setStatus(resultStatus());
     }
   }
 
@@ -589,7 +614,7 @@
     waypoints.splice(idx, 1);
     renderAllSync();
     showResult();
-    setStatus('Drag markers to adjust \u00B7 click map to add waypoints \u00B7 double-click middle marker to remove');
+    setStatus(resultStatus());
   }
 
   // === Preview line while placing + drag handling ===
@@ -607,7 +632,12 @@
       const latLng = pixelToLatLngSync(mx, my);
       if (!latLng) return;
       waypoints[dragging] = { lat: latLng.lat, lng: latLng.lng };
-      updateDragPosition(dragging);
+      // Use optimized update if refs are populated, otherwise full rebuild
+      if (svgMarkerGroups.length > 0) {
+        updateDragPosition(dragging);
+      } else {
+        renderAllSync();
+      }
       if (waypoints.length >= 2) showResult();
       return;
     }
@@ -656,7 +686,7 @@
       dragging = null;
       overlay.classList.remove('dragging');
       document.removeEventListener('pointerup', onPointerUp);
-      setStatus('Drag markers to adjust \u00B7 click map to add waypoints \u00B7 double-click middle marker to remove');
+      setStatus(resultStatus());
     };
     document.addEventListener('pointerup', onPointerUp);
   }
