@@ -4,32 +4,41 @@
   let mapInstance = null;
 
   function findMapInstance() {
-    // Strategy 1: Look for the gm-style container and walk up to find __gm
+    // Strategy 1: Walk up from .gm-style to find __gm property
     const gmStyle = document.querySelector('.gm-style');
     if (gmStyle) {
-      let el = gmStyle.parentElement;
+      let el = gmStyle;
       while (el) {
         if (el.__gm && el.__gm.map) return el.__gm.map;
         el = el.parentElement;
       }
     }
 
-    // Strategy 2: Check known container IDs
-    const containers = document.querySelectorAll('#map-canvas, #map, [role="application"]');
+    // Strategy 2: Check known container IDs and roles
+    const containers = document.querySelectorAll(
+      '#map-canvas, #map, [role="application"], [aria-label="Map"], #scene, .widget-scene'
+    );
     for (const container of containers) {
       if (container.__gm && container.__gm.map) return container.__gm.map;
-      // Check children
-      const inner = container.querySelector('.gm-style');
-      if (inner) {
-        let el = inner.parentElement;
-        while (el && el !== container.parentElement) {
-          if (el.__gm && el.__gm.map) return el.__gm.map;
-          el = el.parentElement;
-        }
+      // Walk children looking for __gm
+      const walker = document.createTreeWalker(container, NodeFilter.SHOW_ELEMENT);
+      let node;
+      while ((node = walker.nextNode())) {
+        if (node.__gm && node.__gm.map) return node.__gm.map;
       }
     }
 
-    return null;
+    // Strategy 3: Brute-force walk from body (limited depth to avoid perf issues)
+    function searchDepth(el, depth) {
+      if (depth > 6) return null;
+      if (el.__gm && el.__gm.map) return el.__gm.map;
+      for (const child of el.children) {
+        const found = searchDepth(child, depth + 1);
+        if (found) return found;
+      }
+      return null;
+    }
+    return searchDepth(document.body, 0);
   }
 
   // Handle pixel-to-latlng conversion requests

@@ -16,6 +16,10 @@
   let svgLegLines = [];
   let svgLegArrows = [];
   let svgLegLabels = [];
+  let svgGhostMarkers = [];
+
+  // Drag tooltip element
+  let dragTooltip = null;
 
   // === DOM elements ===
   let toolbar = null;
@@ -395,10 +399,14 @@
     statusEl.setAttribute('role', 'status');
     statusEl.setAttribute('aria-live', 'polite');
 
+    dragTooltip = document.createElement('div');
+    dragTooltip.className = 'bearing-drag-tooltip';
+
     document.body.appendChild(toolbar);
     document.body.appendChild(searchPanel);
     document.body.appendChild(resultPanel);
     document.body.appendChild(statusEl);
+    document.body.appendChild(dragTooltip);
   }
 
   function createSearchField(placeholder) {
@@ -691,6 +699,10 @@
         renderAllSync();
       }
       if (waypoints.length >= 2) showResult();
+      // Update coordinate tooltip
+      dragTooltip.textContent = latLng.lat.toFixed(5) + ', ' + latLng.lng.toFixed(5);
+      dragTooltip.style.left = (event.clientX + 16) + 'px';
+      dragTooltip.style.top = (event.clientY - 10) + 'px';
       return;
     }
 
@@ -725,6 +737,46 @@
   // === Drag start ===
   function handleOverlayPointerDown(event) {
     if (!isActive || state !== 'RESULT') return;
+
+    // Check for ghost marker (insert new waypoint)
+    const ghost = event.target.closest('.bearing-ghost-marker');
+    if (ghost) {
+      event.preventDefault();
+      event.stopPropagation();
+      const legIdx = parseInt(ghost.dataset.leg, 10);
+      if (isNaN(legIdx)) return;
+
+      // Calculate midpoint lat/lng for this leg
+      const wp1 = waypoints[legIdx];
+      const wp2 = waypoints[legIdx + 1];
+      const midLat = (wp1.lat + wp2.lat) / 2;
+      const midLng = (wp1.lng + wp2.lng) / 2;
+
+      // Insert new waypoint
+      waypoints.splice(legIdx + 1, 0, { lat: midLat, lng: midLng });
+      renderAllSync();
+      showResult();
+
+      // Immediately start dragging the new waypoint
+      dragging = legIdx + 1;
+      overlay.classList.add('dragging');
+      overlay.setPointerCapture(event.pointerId);
+
+      // Lift the new marker
+      if (svgMarkerGroups[dragging]) {
+        svgMarkerGroups[dragging].classList.add('bearing-marker-group-lifted');
+      }
+      dragTooltip.classList.add('visible');
+
+      const onPointerUp = () => {
+        finishDrag();
+        document.removeEventListener('pointerup', onPointerUp);
+      };
+      document.addEventListener('pointerup', onPointerUp);
+      return;
+    }
+
+    // Check for real marker handle
     const handle = event.target.closest('.bearing-marker-handle');
     if (!handle) return;
 
@@ -734,13 +786,40 @@
     overlay.classList.add('dragging');
     overlay.setPointerCapture(event.pointerId);
 
+    // Lift effect: scale up the marker
+    if (svgMarkerGroups[dragging]) {
+      svgMarkerGroups[dragging].classList.add('bearing-marker-group-lifted');
+    }
+    dragTooltip.classList.add('visible');
+
     const onPointerUp = () => {
-      dragging = null;
-      overlay.classList.remove('dragging');
+      finishDrag();
       document.removeEventListener('pointerup', onPointerUp);
-      setStatus(resultStatus());
     };
     document.addEventListener('pointerup', onPointerUp);
+  }
+
+  function finishDrag() {
+    const droppedIdx = dragging;
+    dragging = null;
+    overlay.classList.remove('dragging');
+    dragTooltip.classList.remove('visible');
+
+    // Drop-settle animation
+    if (droppedIdx !== null && svgMarkerGroups[droppedIdx]) {
+      svgMarkerGroups[droppedIdx].classList.remove('bearing-marker-group-lifted');
+      svgMarkerGroups[droppedIdx].classList.add('bearing-marker-group-dropped');
+      setTimeout(() => {
+        if (svgMarkerGroups[droppedIdx]) {
+          svgMarkerGroups[droppedIdx].classList.remove('bearing-marker-group-dropped');
+        }
+      }, 350);
+    }
+
+    // Full rebuild to add ghost markers back
+    renderAllSync();
+    showResult();
+    setStatus(resultStatus());
   }
 
   // === SVG rendering ===
@@ -825,6 +904,32 @@
     return g;
   }
 
+  function createGhostMarkerGroup(x, y, legIndex) {
+    const ns = 'http://www.w3.org/2000/svg';
+    const g = document.createElementNS(ns, 'g');
+    g.setAttribute('transform', 'translate(' + x + ',' + y + ')');
+
+    const circle = document.createElementNS(ns, 'circle');
+    circle.setAttribute('cx', '0');
+    circle.setAttribute('cy', '0');
+    circle.setAttribute('r', '7');
+    circle.setAttribute('fill', COLOR_MID);
+    circle.setAttribute('stroke', '#fff');
+    circle.setAttribute('stroke-width', '2');
+    circle.setAttribute('class', 'bearing-ghost-marker');
+    circle.dataset.leg = String(legIndex);
+    g.appendChild(circle);
+
+    const text = document.createElementNS(ns, 'text');
+    text.setAttribute('x', '0');
+    text.setAttribute('y', '0.5');
+    text.setAttribute('class', 'bearing-ghost-label');
+    text.textContent = '+';
+    g.appendChild(text);
+
+    return g;
+  }
+
   function drawLegWithLabel(pxFrom, pxTo, legBearing) {
     const ns = 'http://www.w3.org/2000/svg';
 
@@ -901,6 +1006,17 @@
       drawLegWithLabel(pixels[i], pixels[i + 1], legBearing);
     }
 
+    // Ghost midpoint markers
+    if (state === 'RESULT' && waypoints.length >= 2) {
+      for (let i = 0; i < waypoints.length - 1; i++) {
+        if (!pixels[i] || !pixels[i + 1]) continue;
+        const midX = (pixels[i].x + pixels[i + 1].x) / 2;
+        const midY = (pixels[i].y + pixels[i + 1].y) / 2;
+        const gm = createGhostMarkerGroup(midX, midY, i);
+        svgEl.appendChild(gm);
+      }
+    }
+
     // Draw markers on top of lines
     const inResult = state === 'RESULT';
     for (let i = 0; i < waypoints.length; i++) {
@@ -918,6 +1034,7 @@
     svgLegLines = [];
     svgLegArrows = [];
     svgLegLabels = [];
+    svgGhostMarkers = [];
     if (waypoints.length === 0) return;
 
     const pixels = waypoints.map(wp => latLngToPixelSync(wp.lat, wp.lng));
@@ -935,7 +1052,19 @@
       svgLegLabels.push(legRefs.label);
     }
 
-    // Draw markers (store refs)
+    // Ghost midpoint markers (drag to insert new waypoint)
+    if (state === 'RESULT' && waypoints.length >= 2) {
+      for (let i = 0; i < waypoints.length - 1; i++) {
+        if (!pixels[i] || !pixels[i + 1]) continue;
+        const midX = (pixels[i].x + pixels[i + 1].x) / 2;
+        const midY = (pixels[i].y + pixels[i + 1].y) / 2;
+        const gm = createGhostMarkerGroup(midX, midY, i);
+        svgEl.appendChild(gm);
+        svgGhostMarkers.push(gm);
+      }
+    }
+
+    // Draw markers on top (store refs)
     for (let i = 0; i < waypoints.length; i++) {
       if (!pixels[i]) continue;
       const mg = createMarkerGroup(pixels[i].x, pixels[i].y, i, true);
