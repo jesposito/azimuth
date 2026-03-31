@@ -165,6 +165,7 @@
 .bearing-overlay.active {
   pointer-events: auto;
   cursor: crosshair;
+  touch-action: none;
 }
 
 .bearing-overlay.dragging {
@@ -262,12 +263,12 @@
 /* Result panel */
 .bearing-result-panel {
   position: fixed;
-  bottom: 250px;
+  bottom: 280px;
   right: 12px;
   z-index: 10001;
   background: #fff;
   border-radius: 8px;
-  padding: 14px 18px 12px;
+  padding: 14px 18px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
   font-family: Roboto, Arial, sans-serif;
   opacity: 0;
@@ -424,7 +425,7 @@
   right: 34px;
   height: 20px;
   padding: 0 8px;
-  border: 1px solid #dadce0;
+  border: 1px solid #e8eaed;
   background: #fff;
   cursor: pointer;
   color: #4285f4;
@@ -468,4 +469,31 @@
 
 .bearing-status.visible {
   opacity: 1;
+}
+
+/* Focus-visible for keyboard accessibility */
+.bearing-toggle-btn:focus-visible,
+.bearing-search-clear:focus-visible,
+.bearing-clear-btn:focus-visible,
+.bearing-copy-btn:focus-visible {
+  outline: 2px solid #4285f4;
+  outline-offset: 2px;
+}
+
+.bearing-search-input:focus-visible {
+  outline: none;
+  box-shadow: 0 1px 0 0 #4285f4;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .bearing-pulse { animation: none; }
+  .bearing-search-spinner { animation-duration: 1.5s; }
+  .bearing-search-panel,
+  .bearing-result-panel,
+  .bearing-status,
+  .bearing-toggle-btn,
+  .bearing-marker {
+    transition: none;
+  }
 }

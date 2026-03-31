@@ -11,6 +11,12 @@
   let lastURL = '';
   let dragging = null; // index (number) of waypoint being dragged, or null
 
+  // SVG element refs for efficient drag updates
+  let svgMarkerGroups = [];
+  let svgLegLines = [];
+  let svgLegArrows = [];
+  let svgLegLabels = [];
+
   // === DOM elements ===
   let toolbar = null;
   let toggleBtn = null;
@@ -352,6 +358,7 @@
     input.className = 'bearing-search-input';
     input.setAttribute('autocomplete', 'off');
     input.setAttribute('spellcheck', 'false');
+    input.setAttribute('aria-label', placeholder.replace('...', ''));
     wrapper.appendChild(input);
 
     const clearBtn = document.createElement('button');
@@ -400,8 +407,8 @@
 
     overlay.addEventListener('click', handleOverlayClick);
     overlay.addEventListener('dblclick', handleOverlayDblClick);
-    overlay.addEventListener('mousemove', handleOverlayMouseMove);
-    overlay.addEventListener('mousedown', handleOverlayMouseDown);
+    overlay.addEventListener('pointermove', handleOverlayPointerMove);
+    overlay.addEventListener('pointerdown', handleOverlayPointerDown);
 
     mapContainer.style.position = mapContainer.style.position || 'relative';
     mapContainer.appendChild(overlay);
@@ -588,7 +595,7 @@
   // === Preview line while placing + drag handling ===
   let previewLineEl = null;
 
-  function handleOverlayMouseMove(event) {
+  function handleOverlayPointerMove(event) {
     if (!isActive) return;
 
     const rect = mapContainer.getBoundingClientRect();
@@ -600,7 +607,7 @@
       const latLng = pixelToLatLngSync(mx, my);
       if (!latLng) return;
       waypoints[dragging] = { lat: latLng.lat, lng: latLng.lng };
-      renderAllSync();
+      updateDragPosition(dragging);
       if (waypoints.length >= 2) showResult();
       return;
     }
@@ -634,7 +641,7 @@
   }
 
   // === Drag start ===
-  function handleOverlayMouseDown(event) {
+  function handleOverlayPointerDown(event) {
     if (!isActive || state !== 'RESULT') return;
     const handle = event.target.closest('.bearing-marker-handle');
     if (!handle) return;
@@ -643,14 +650,15 @@
     event.stopPropagation();
     dragging = parseInt(handle.dataset.point, 10);
     overlay.classList.add('dragging');
+    overlay.setPointerCapture(event.pointerId);
 
-    const onMouseUp = () => {
+    const onPointerUp = () => {
       dragging = null;
       overlay.classList.remove('dragging');
-      document.removeEventListener('mouseup', onMouseUp);
+      document.removeEventListener('pointerup', onPointerUp);
       setStatus('Drag markers to adjust \u00B7 click map to add waypoints \u00B7 double-click middle marker to remove');
     };
-    document.addEventListener('mouseup', onMouseUp);
+    document.addEventListener('pointerup', onPointerUp);
   }
 
   // === SVG rendering ===
@@ -821,28 +829,151 @@
     }
   }
 
-  // Sync render (drag)
+  // Sync render (full rebuild, stores element refs for drag updates)
   function renderAllSync() {
     clearSVG();
+    svgMarkerGroups = [];
+    svgLegLines = [];
+    svgLegArrows = [];
+    svgLegLabels = [];
     if (waypoints.length === 0) return;
 
     const pixels = waypoints.map(wp => latLngToPixelSync(wp.lat, wp.lng));
 
-    // Draw legs
+    // Draw legs (store refs)
     for (let i = 0; i < waypoints.length - 1; i++) {
       if (!pixels[i] || !pixels[i + 1]) continue;
       const legBearing = BearingGeo.bearing(
         waypoints[i].lat, waypoints[i].lng,
         waypoints[i + 1].lat, waypoints[i + 1].lng
       );
-      drawLegWithLabel(pixels[i], pixels[i + 1], legBearing);
+      const legRefs = drawLegWithLabelAndRefs(pixels[i], pixels[i + 1], legBearing);
+      svgLegLines.push(legRefs.line);
+      svgLegArrows.push(legRefs.arrow);
+      svgLegLabels.push(legRefs.label);
     }
 
-    // Draw markers
+    // Draw markers (store refs)
     for (let i = 0; i < waypoints.length; i++) {
       if (!pixels[i]) continue;
       const mg = createMarkerGroup(pixels[i].x, pixels[i].y, i, true);
       svgEl.appendChild(mg);
+      svgMarkerGroups.push(mg);
+    }
+  }
+
+  // Draw leg and return element refs for later updates
+  function drawLegWithLabelAndRefs(pxFrom, pxTo, legBearing) {
+    const ns = 'http://www.w3.org/2000/svg';
+
+    const line = document.createElementNS(ns, 'line');
+    line.setAttribute('x1', pxFrom.x);
+    line.setAttribute('y1', pxFrom.y);
+    line.setAttribute('x2', pxTo.x);
+    line.setAttribute('y2', pxTo.y);
+    line.setAttribute('class', 'bearing-line');
+    svgEl.appendChild(line);
+
+    const midX = (pxFrom.x + pxTo.x) / 2;
+    const midY = (pxFrom.y + pxTo.y) / 2;
+    const angle = Math.atan2(pxTo.y - pxFrom.y, pxTo.x - pxFrom.x) * 180 / Math.PI;
+
+    const arrowG = document.createElementNS(ns, 'g');
+    arrowG.setAttribute('transform', 'translate(' + midX + ',' + midY + ') rotate(' + angle + ')');
+    const arrowPath = document.createElementNS(ns, 'path');
+    arrowPath.setAttribute('d', 'M-8,-6 L8,0 L-8,6 Z');
+    arrowPath.setAttribute('fill', COLOR_LINE);
+    arrowPath.setAttribute('stroke', '#fff');
+    arrowPath.setAttribute('stroke-width', '1.5');
+    arrowPath.setAttribute('class', 'bearing-arrow');
+    arrowG.appendChild(arrowPath);
+    svgEl.appendChild(arrowG);
+
+    const cardinal = BearingGeo.cardinalDirection(legBearing);
+    const labelG = document.createElementNS(ns, 'g');
+    labelG.setAttribute('transform', 'translate(' + midX + ',' + midY + ')');
+
+    const labelBg = document.createElementNS(ns, 'rect');
+    const labelText = legBearing.toFixed(1) + '\u00B0 ' + cardinal;
+    const approxW = labelText.length * 6.5 + 10;
+    labelBg.setAttribute('x', String(-approxW / 2));
+    labelBg.setAttribute('y', '-22');
+    labelBg.setAttribute('width', String(approxW));
+    labelBg.setAttribute('height', '16');
+    labelBg.setAttribute('rx', '3');
+    labelBg.setAttribute('fill', 'rgba(255,255,255,0.9)');
+    labelBg.setAttribute('class', 'bearing-leg-label-bg');
+    labelG.appendChild(labelBg);
+
+    const labelTxt = document.createElementNS(ns, 'text');
+    labelTxt.setAttribute('x', '0');
+    labelTxt.setAttribute('y', '-11');
+    labelTxt.setAttribute('class', 'bearing-leg-label');
+    labelTxt.textContent = labelText;
+    labelG.appendChild(labelTxt);
+
+    svgEl.appendChild(labelG);
+
+    return { line, arrow: arrowG, label: labelG };
+  }
+
+  // Update only the dragged marker and its adjacent legs (no full rebuild)
+  function updateDragPosition(dragIdx) {
+    const px = latLngToPixelSync(waypoints[dragIdx].lat, waypoints[dragIdx].lng);
+    if (!px) return;
+
+    // Update marker position
+    if (svgMarkerGroups[dragIdx]) {
+      svgMarkerGroups[dragIdx].setAttribute('transform', 'translate(' + px.x + ',' + px.y + ')');
+    }
+
+    // Update preceding leg
+    if (dragIdx > 0) {
+      const prevPx = latLngToPixelSync(waypoints[dragIdx - 1].lat, waypoints[dragIdx - 1].lng);
+      if (prevPx) updateLegVisuals(dragIdx - 1, prevPx, px);
+    }
+
+    // Update following leg
+    if (dragIdx < waypoints.length - 1) {
+      const nextPx = latLngToPixelSync(waypoints[dragIdx + 1].lat, waypoints[dragIdx + 1].lng);
+      if (nextPx) updateLegVisuals(dragIdx, px, nextPx);
+    }
+  }
+
+  function updateLegVisuals(legIdx, pxFrom, pxTo) {
+    const bearing = BearingGeo.bearing(
+      waypoints[legIdx].lat, waypoints[legIdx].lng,
+      waypoints[legIdx + 1].lat, waypoints[legIdx + 1].lng
+    );
+
+    if (svgLegLines[legIdx]) {
+      svgLegLines[legIdx].setAttribute('x1', pxFrom.x);
+      svgLegLines[legIdx].setAttribute('y1', pxFrom.y);
+      svgLegLines[legIdx].setAttribute('x2', pxTo.x);
+      svgLegLines[legIdx].setAttribute('y2', pxTo.y);
+    }
+
+    const midX = (pxFrom.x + pxTo.x) / 2;
+    const midY = (pxFrom.y + pxTo.y) / 2;
+    const angle = Math.atan2(pxTo.y - pxFrom.y, pxTo.x - pxFrom.x) * 180 / Math.PI;
+
+    if (svgLegArrows[legIdx]) {
+      svgLegArrows[legIdx].setAttribute('transform', 'translate(' + midX + ',' + midY + ') rotate(' + angle + ')');
+    }
+
+    if (svgLegLabels[legIdx]) {
+      const cardinal = BearingGeo.cardinalDirection(bearing);
+      const labelText = bearing.toFixed(1) + '\u00B0 ' + cardinal;
+      const approxW = labelText.length * 6.5 + 10;
+
+      svgLegLabels[legIdx].setAttribute('transform', 'translate(' + midX + ',' + midY + ')');
+      const bg = svgLegLabels[legIdx].querySelector('rect');
+      if (bg) {
+        bg.setAttribute('x', String(-approxW / 2));
+        bg.setAttribute('width', String(approxW));
+      }
+      const txt = svgLegLabels[legIdx].querySelector('text');
+      if (txt) txt.textContent = labelText;
     }
   }
 
@@ -880,15 +1011,19 @@
     for (let i = 0; i < waypoints.length - 1; i++) {
       const wp1 = waypoints[i];
       const wp2 = waypoints[i + 1];
-      const deg = BearingGeo.bearing(wp1.lat, wp1.lng, wp2.lat, wp2.lng);
-      const cardinal = BearingGeo.cardinalDirection(deg);
-      const dist = BearingGeo.distance(wp1.lat, wp1.lng, wp2.lat, wp2.lng);
-      const decl = MagDeclination.getDeclination((wp1.lat + wp2.lat) / 2, (wp1.lng + wp2.lng) / 2);
-      const magDeg = ((deg - decl) + 360) % 360;
-      const magCardinal = BearingGeo.cardinalDirection(magDeg);
+      try {
+        const deg = BearingGeo.bearing(wp1.lat, wp1.lng, wp2.lat, wp2.lng);
+        const cardinal = BearingGeo.cardinalDirection(deg);
+        const dist = BearingGeo.distance(wp1.lat, wp1.lng, wp2.lat, wp2.lng);
+        const decl = MagDeclination.getDeclination((wp1.lat + wp2.lat) / 2, (wp1.lng + wp2.lng) / 2);
+        const magDeg = ((deg - decl) + 360) % 360;
+        const magCardinal = BearingGeo.cardinalDirection(magDeg);
 
-      legs.push({ deg, cardinal, dist, decl, magDeg, magCardinal, wp1, wp2 });
-      totalDist += dist;
+        legs.push({ deg, cardinal, dist, decl, magDeg, magCardinal, wp1, wp2 });
+        totalDist += dist;
+      } catch (_err) {
+        legs.push({ deg: 0, cardinal: 'N', dist: 0, decl: 0, magDeg: 0, magCardinal: 'N', wp1, wp2 });
+      }
     }
 
     // Render each leg
@@ -1015,15 +1150,7 @@
     navigator.clipboard.writeText(text).then(() => {
       showCopiedConfirmation();
     }).catch(() => {
-      // Fallback: create a transient textarea
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.top = '-9999px';
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
+      // clipboard API may fail in some contexts - show feedback anyway
       showCopiedConfirmation();
     });
   }
@@ -1035,6 +1162,8 @@
     const origText = copyBtn.textContent;
     copyBtn.textContent = 'Copied!';
     copyBtn.classList.add('bearing-copy-btn-success');
+    // Announce to screen readers via the live region
+    statusEl.textContent = 'Results copied to clipboard';
     setTimeout(() => {
       copyBtn.textContent = origText;
       copyBtn.classList.remove('bearing-copy-btn-success');
@@ -1056,16 +1185,31 @@
   }
 
   // === Map movement tracking ===
+  let urlPollDebounce = null;
+
   function startURLPoll() {
     lastURL = window.location.href;
-    urlPollInterval = setInterval(async () => {
+    urlPollInterval = setInterval(() => {
+      // SPA recovery: detect if map container was removed
+      if (mapContainer && !document.contains(mapContainer)) {
+        mapContainer = findMapContainer();
+        if (mapContainer) {
+          createOverlay();
+        }
+      }
+
       const currentURL = window.location.href;
       if (currentURL !== lastURL) {
         lastURL = currentURL;
-        if (waypoints.length > 0) {
-          await renderAll();
-          if (waypoints.length >= 2) showResult();
-        }
+        // Debounce rapid URL changes during pan/zoom
+        if (urlPollDebounce) clearTimeout(urlPollDebounce);
+        urlPollDebounce = setTimeout(async () => {
+          urlPollDebounce = null;
+          if (waypoints.length > 0) {
+            await renderAll();
+            if (waypoints.length >= 2) showResult();
+          }
+        }, 150);
       }
     }, 200);
   }
