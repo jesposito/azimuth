@@ -1157,6 +1157,7 @@
 
   // Update only the dragged marker and its adjacent legs (no full rebuild)
   function updateDragPosition(dragIdx) {
+    if (dragIdx < 0 || dragIdx >= waypoints.length || !waypoints[dragIdx]) return;
     const px = latLngToPixelSync(waypoints[dragIdx].lat, waypoints[dragIdx].lng);
     if (!px) return;
 
@@ -1490,6 +1491,14 @@
 
     if ((event.ctrlKey || event.metaKey) && event.key === 'z' && isActive) {
       event.preventDefault();
+      // Cancel any active drag before undoing
+      if (dragging !== null) {
+        dragging = null;
+        dragPending = null;
+        dragStartPos = null;
+        overlay.classList.remove('dragging');
+        dragTooltip.classList.remove('visible');
+      }
       if (waypoints.length > 0) {
         waypoints.pop();
         if (waypoints.length < 2) {
