@@ -744,8 +744,11 @@
 
       const onPointerUp = () => {
         finishDrag();
+        overlay.removeEventListener('pointerup', onPointerUp);
         document.removeEventListener('pointerup', onPointerUp);
       };
+      // Listen on both overlay (has pointer capture) and document (fallback)
+      overlay.addEventListener('pointerup', onPointerUp);
       document.addEventListener('pointerup', onPointerUp);
       return;
     }
@@ -768,8 +771,11 @@
       } else {
         finishDrag();
       }
+      overlay.removeEventListener('pointerup', onPointerUp);
       document.removeEventListener('pointerup', onPointerUp);
     };
+    // Listen on both overlay (captures pointer after threshold) and document (fallback)
+    overlay.addEventListener('pointerup', onPointerUp);
     document.addEventListener('pointerup', onPointerUp);
   }
 
